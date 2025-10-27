@@ -48,7 +48,61 @@ static Shoot_Upload_Data_s shoot_fetch_data; // 从发射获取的反馈信息
 static buf_t *buffer_yaw, *buffer_pitch, *buffer_delay_yaw; 
 static Robot_Status_e robot_state; // 机器人整体工作状态
 static uint8_t flag=1;
-static float aligned_total_yaw, aligned_total_pitch, delayed_total_yaw;
+static float aligned_total_yaw, aligned_total_pitch, delayed_total_yaw,fitter_vision_recv_data_yaw;
+static float vision_last_yaw;
+//shiyan
+
+// 新增：物理约束参数（根据实际设备调试）
+#define MAX_OMEGA_YAW 100.0f    // 云台YAW轴最大角速度（°/s），需实测
+#define MAX_ALPHA_YAW 200.0f   // 云台YAW轴最大角加速度（°/s²），需实测
+#define SAMPLE_DT 0.005f       // 采样周期（s），200Hz对应0.005s
+// 新增参数
+#define YAW_PULSE_THRESHOLD 5.0f    // 脉冲幅度阈值（超过则视为可疑）
+#define PULSE_DURATION_THRESHOLD 3  // 脉冲持续帧数（超过则视为真实变化）
+static uint8_t pulse_counter = 0;  // 脉冲持续计数器
+// 历史数据缓冲区
+static float yaw_history[3] = {0.0f, 0.0f, 0.0f};  // 存储最近3个有效值（t-2, t-1, t）
+static float smoothed_yaw = 0.0f;         
+/**
+ * 优化版YAW数据处理：动态阈值+自适应平滑
+ * 区分毛刺和真实快速变化，兼顾滤波和响应速度
+ */float processYawData(float new_yaw) {
+    // 1. 脉冲式毛刺检测：幅度+持续时间
+    float delta = fabs(new_yaw - smoothed_yaw);  // 与上一帧平滑后的值比较
+    if (delta > YAW_PULSE_THRESHOLD) {
+        pulse_counter++;
+        if (pulse_counter < PULSE_DURATION_THRESHOLD) {
+            // 短时脉冲毛刺 → 用历史趋势值替换
+            float trend = yaw_history[2] - yaw_history[1];
+            new_yaw = yaw_history[2] + trend;
+        } else {
+            // 持续超过阈值 → 视为真实变化，重置计数器
+            pulse_counter = 0;
+        }
+    } else {
+        pulse_counter = 0;  // 无脉冲，重置计数器
+    }
+
+    // 2. 滑动平均平滑（针对高频脉冲，比指数平滑更彻底）
+    static float yaw_buffer[5] = {0};  // 5帧滑动窗口
+    static uint8_t buf_idx = 0;
+    yaw_buffer[buf_idx] = new_yaw;
+    buf_idx = (buf_idx + 1) % 5;
+
+    float sum = 0;
+    for (uint8_t i = 0; i < 5; i++) {
+        sum += yaw_buffer[i];
+    }
+    smoothed_yaw = sum / 5.0f;
+
+    // 更新历史趋势数据
+    yaw_history[0] = yaw_history[1];
+    yaw_history[1] = yaw_history[2];
+    yaw_history[2] = smoothed_yaw;
+
+    return smoothed_yaw;
+}
+//shiyan
 
 void syncWithVisionSystem()
 {
@@ -61,7 +115,7 @@ void RobotCMDInit()
     rc_data = RemoteControlInit(&huart5); // 修改为对应串口,注意如果是自研板dbus协议串口需选用添加了反相器的那个
     // nav_recv_data = NavInit(&huart9);
     vision_recv_data = VisionInit(&huart10, syncWithVisionSystem); // 视觉通信串口
-
+    vision_last_yaw = 0;
     buffer_yaw = BUFRegister();
     buffer_pitch = BUFRegister();
     buffer_delay_yaw = BUFRegister();
@@ -144,11 +198,17 @@ static void RemoteControlSet()
         if(vision_recv_data->yaw < 40 &&
            vision_recv_data->pitch < 40 && 
            vision_recv_data->yaw > -40 && 
-           vision_recv_data->pitch > -40) // 异常数据判断
+           vision_recv_data->pitch > -40 && abs(vision_recv_data->yaw-vision_last_yaw) < 10) // 异常数据判断
         {
+            // processYawData(vision_recv_data->yaw);
+            // fitter_vision_recv_data_yaw=vision_recv_data->yaw*0.2+fitter_vision_recv_data_yaw*0.8;
+
             gimbal_cmd_send.yaw = aligned_total_yaw + vision_recv_data->yaw;
+
+
             // gimbal_cmd_send.pitch = aligned_total_pitch + vision_recv_data->pitch;
         }
+        vision_last_yaw = vision_recv_data->yaw;
         // chassis_cmd_send.vy = nav_recv_data->vx * 19500; // _水平方向
         // chassis_cmd_send.vx = nav_recv_data->vy * 19500; // 1数值方向
         // chassis_cmd_send.wz = nav_recv_data->wz;
