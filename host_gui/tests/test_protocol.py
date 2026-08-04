@@ -8,6 +8,12 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(VelocityCommand(0.25, -1.5).encode(), "0.250,-1.500")
 
     def test_encoder_frame(self) -> None:
+        self.assertEqual(
+            parse_encoder_frame("ENC,1250,125,123,-45\r\n"),
+            EncoderFrame(123, -45, mcu_time_ms=1250, sequence=125),
+        )
+
+    def test_legacy_encoder_frame(self) -> None:
         self.assertEqual(parse_encoder_frame("ENC,123,-45\r\n"), EncoderFrame(123, -45))
 
     def test_invalid_frame(self) -> None:

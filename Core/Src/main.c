@@ -39,6 +39,8 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+#define STATUS_LED_BLINK_MS 250U
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -116,7 +118,9 @@ int main(void)
     /* USER CODE BEGIN 3 */
     static uint32_t last_encoder_ms;
     static uint32_t last_led_ms;
+    static bool emergency_was_active;
     uint32_t now = HAL_GetTick();
+    bool emergency_active;
 
     if (now - last_encoder_ms >= 10U) {
       last_encoder_ms = now;
@@ -125,14 +129,21 @@ int main(void)
 
     car_control_process();
 
-    if (now - last_led_ms >= 500U) {
-      last_led_ms = now;
-      if (encoder_has_recent_activity(1000U)) {
+    emergency_active = car_control_emergency_stopped();
+    if (emergency_active) {
+      if (!emergency_was_active) {
+        last_led_ms = now;
+        led_on();
+      } else if (now - last_led_ms >= STATUS_LED_BLINK_MS) {
+        last_led_ms = now;
         led_toggle();
-      } else {
-        led_off();
       }
+    } else if (car_control_get_mode() == CAR_MODE_NAVIGATION) {
+      led_on();
+    } else {
+      led_off();
     }
+    emergency_was_active = emergency_active;
   }
   /* USER CODE END 3 */
 }

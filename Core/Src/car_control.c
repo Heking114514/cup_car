@@ -131,6 +131,8 @@ void car_control_process(void)
     chassis_stop();
   }
 #endif
+
+  chassis_process();
 }
 
 car_mode_t car_control_get_mode(void)

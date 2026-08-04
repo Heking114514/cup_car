@@ -421,6 +421,11 @@
               <FilePath>../Core/Src/chassis.c</FilePath>
             </File>
             <File>
+              <FileName>wheel_speed_controller.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/wheel_speed_controller.c</FilePath>
+            </File>
+            <File>
               <FileName>communication.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/communication.c</FilePath>

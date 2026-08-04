@@ -9,6 +9,8 @@ typedef struct {
   int16_t right_delta;
   int32_t left_total;
   int32_t right_total;
+  uint32_t sample_time_ms;
+  uint32_t sample_sequence;
 } encoder_data_t;
 
 void encoder_init(void);

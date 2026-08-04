@@ -1,7 +1,9 @@
 cup_car\communication.o: ../Core/Src/communication.c
 cup_car\communication.o: ../Core/Inc/communication.h
 cup_car\communication.o: D:\keil5\ARM\ARMCC\Bin\..\include\stdbool.h
+cup_car\communication.o: D:\keil5\ARM\ARMCC\Bin\..\include\math.h
 cup_car\communication.o: D:\keil5\ARM\ARMCC\Bin\..\include\stdlib.h
+cup_car\communication.o: D:\keil5\ARM\ARMCC\Bin\..\include\string.h
 cup_car\communication.o: ../Core/Inc/main.h
 cup_car\communication.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal.h
 cup_car\communication.o: ../Core/Inc/stm32f1xx_hal_conf.h

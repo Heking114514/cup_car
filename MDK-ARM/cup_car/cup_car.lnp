@@ -6,6 +6,7 @@
 "cup_car\serial.o"
 "cup_car\ps2.o"
 "cup_car\chassis.o"
+"cup_car\wheel_speed_controller.o"
 "cup_car\communication.o"
 "cup_car\remote_control.o"
 "cup_car\car_control.o"

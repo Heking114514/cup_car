@@ -1,6 +1,8 @@
 #include "communication.h"
 
+#include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "main.h"
 #include "encoder.h"
@@ -8,6 +10,7 @@
 
 #define COMMAND_LINE_MAX       48U
 #define COMMAND_TIMEOUT_MS     500U
+#define RPY_TIMEOUT_MS         500U
 #define ENCODER_REPORT_PERIOD  50U
 
 static char command_line[2][COMMAND_LINE_MAX];
@@ -17,22 +20,47 @@ static uint32_t last_report_ms;
 static float host_vx_mps;
 static float host_az_radps;
 static bool host_command_valid;
+static uint32_t last_rpy_ms;
+static float host_roll_rad;
+static float host_pitch_rad;
+static float host_yaw_rad;
+static bool host_rpy_valid;
 
-static void communication_parse_command(serial_port_t port)
+static bool communication_parse_float(char **cursor, float *value, char separator)
 {
   char *end;
-  float vx = strtof(command_line[port], &end);
-  float az;
 
-  if (*end != ',') {
-    return;
+  *value = strtof(*cursor, &end);
+  if (end == *cursor || !isfinite(*value)) {
+    return false;
   }
 
-  az = strtof(end + 1, &end);
+  if (separator != '\0') {
+    if (*end != separator) {
+      return false;
+    }
+    *cursor = end + 1;
+    return true;
+  }
+
   while (*end == ' ' || *end == '\t' || *end == '\r') {
     end++;
   }
   if (*end != '\0') {
+    return false;
+  }
+  *cursor = end;
+  return true;
+}
+
+static void communication_parse_velocity(char *line)
+{
+  char *cursor = line;
+  float vx;
+  float az;
+
+  if (!communication_parse_float(&cursor, &vx, ',') ||
+      !communication_parse_float(&cursor, &az, '\0')) {
     return;
   }
 
@@ -42,6 +70,35 @@ static void communication_parse_command(serial_port_t port)
   last_command_ms = HAL_GetTick();
 }
 
+static void communication_parse_rpy(char *line)
+{
+  char *cursor = line + 4;
+  float roll;
+  float pitch;
+  float yaw;
+
+  if (!communication_parse_float(&cursor, &roll, ',') ||
+      !communication_parse_float(&cursor, &pitch, ',') ||
+      !communication_parse_float(&cursor, &yaw, '\0')) {
+    return;
+  }
+
+  host_roll_rad = roll;
+  host_pitch_rad = pitch;
+  host_yaw_rad = yaw;
+  host_rpy_valid = true;
+  last_rpy_ms = HAL_GetTick();
+}
+
+static void communication_parse_line(serial_port_t port)
+{
+  if (strncmp(command_line[port], "RPY,", 4U) == 0) {
+    communication_parse_rpy(command_line[port]);
+  } else {
+    communication_parse_velocity(command_line[port]);
+  }
+}
+
 static void communication_receive(serial_port_t port)
 {
   uint8_t byte;
@@ -49,7 +106,7 @@ static void communication_receive(serial_port_t port)
   while (serial_read_byte(port, &byte)) {
     if (byte == '\n') {
       command_line[port][command_length[port]] = '\0';
-      communication_parse_command(port);
+      communication_parse_line(port);
       command_length[port] = 0;
     } else if (byte != '\r' && command_length[port] < COMMAND_LINE_MAX - 1U) {
       command_line[port][command_length[port]++] = (char)byte;
@@ -63,10 +120,16 @@ static void communication_send_encoders(void)
 {
   const encoder_data_t *encoder = encoder_get_data();
 
-  serial_printf(SERIAL_DEBUG, "ENC,%ld,%ld\r\n",
-                (long)encoder->left_total, (long)encoder->right_total);
-  serial_printf(SERIAL_AUX, "ENC,%ld,%ld\r\n",
-                (long)encoder->left_total, (long)encoder->right_total);
+  serial_printf(SERIAL_DEBUG, "ENC,%lu,%lu,%ld,%ld\r\n",
+                (unsigned long)encoder->sample_time_ms,
+                (unsigned long)encoder->sample_sequence,
+                (long)encoder->left_total,
+                (long)encoder->right_total);
+  serial_printf(SERIAL_AUX, "ENC,%lu,%lu,%ld,%ld\r\n",
+                (unsigned long)encoder->sample_time_ms,
+                (unsigned long)encoder->sample_sequence,
+                (long)encoder->left_total,
+                (long)encoder->right_total);
 }
 
 void communication_init(void)
@@ -74,7 +137,9 @@ void communication_init(void)
   command_length[SERIAL_DEBUG] = 0;
   command_length[SERIAL_AUX] = 0;
   host_command_valid = false;
+  host_rpy_valid = false;
   last_command_ms = HAL_GetTick();
+  last_rpy_ms = HAL_GetTick();
   last_report_ms = HAL_GetTick();
 }
 
@@ -99,5 +164,17 @@ bool communication_get_command(float *vx_mps, float *az_radps)
 
   *vx_mps = host_vx_mps;
   *az_radps = host_az_radps;
+  return true;
+}
+
+bool communication_get_rpy(float *roll_rad, float *pitch_rad, float *yaw_rad)
+{
+  if (!host_rpy_valid || HAL_GetTick() - last_rpy_ms > RPY_TIMEOUT_MS) {
+    return false;
+  }
+
+  *roll_rad = host_roll_rad;
+  *pitch_rad = host_pitch_rad;
+  *yaw_rad = host_yaw_rad;
   return true;
 }

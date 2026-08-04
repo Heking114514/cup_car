@@ -29,6 +29,8 @@ void encoder_reset(void)
   encoder_data.right_delta = 0;
   encoder_data.left_total = 0;
   encoder_data.right_total = 0;
+  encoder_data.sample_time_ms = HAL_GetTick();
+  encoder_data.sample_sequence = 0U;
   last_activity_ms = 0U;
   activity_seen = false;
 }
@@ -54,6 +56,8 @@ void encoder_update(void)
   encoder_data.right_delta = right_delta;
   encoder_data.left_total += left_delta;
   encoder_data.right_total += right_delta;
+  encoder_data.sample_time_ms = HAL_GetTick();
+  encoder_data.sample_sequence++;
 
   if (left_delta != 0 || right_delta != 0) {
     last_activity_ms = HAL_GetTick();
