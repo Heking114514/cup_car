@@ -3,6 +3,8 @@
 #include "chassis.h"
 #include "communication.h"
 #include "encoder.h"
+#include "heading_control.h"
+#include "heading_session.h"
 #include "main.h"
 #include "route_run.h"
 
@@ -15,15 +17,66 @@
 
 static car_mode_t car_mode;
 static bool emergency_stop;
+static heading_controller_t navigation_heading_controller;
+static heading_session_t navigation_heading_session;
 #if CAR_CONTROL_REMOTE_ENABLED
 static bool select_was_down;
 static bool r2_was_down;
 static bool remote_armed;
 #endif
 
+static void car_control_enter_navigation(void)
+{
+  float roll_rad;
+  float pitch_rad;
+  float yaw_rad = 0.0f;
+  bool imu_valid = communication_get_rpy(&roll_rad, &pitch_rad, &yaw_rad);
+
+  heading_session_enter(&navigation_heading_session, imu_valid);
+  heading_control_stop(&navigation_heading_controller);
+}
+
+static void car_control_process_navigation(void)
+{
+  float vx_mps;
+  float az_radps;
+  float roll_rad;
+  float pitch_rad;
+  float yaw_rad = 0.0f;
+  bool imu_valid = communication_get_rpy(&roll_rad, &pitch_rad, &yaw_rad);
+
+  heading_session_monitor_imu(&navigation_heading_session, imu_valid);
+  if (!heading_session_is_active(&navigation_heading_session)) {
+    heading_control_stop(&navigation_heading_controller);
+  }
+
+  if (emergency_stop) {
+    heading_control_stop(&navigation_heading_controller);
+    chassis_stop();
+  } else if (communication_get_command(&vx_mps, &az_radps)) {
+    bool straight_requested = chassis_command_is_straight(vx_mps, az_radps);
+
+    if (heading_session_is_active(&navigation_heading_session) &&
+        straight_requested) {
+      if (!heading_control_has_target(&navigation_heading_controller)) {
+        heading_control_start(&navigation_heading_controller, yaw_rad);
+      }
+      az_radps += heading_control_update(&navigation_heading_controller, yaw_rad);
+    } else {
+      heading_control_stop(&navigation_heading_controller);
+    }
+    chassis_set_velocity(vx_mps, az_radps);
+  } else {
+    heading_control_stop(&navigation_heading_controller);
+    chassis_stop();
+  }
+}
+
 void car_control_init(void)
 {
   chassis_init();
+  heading_control_init(&navigation_heading_controller);
+  heading_session_init(&navigation_heading_session);
 #if CAR_CONTROL_REMOTE_ENABLED
   remote_control_init();
 #endif
@@ -33,6 +86,7 @@ void car_control_init(void)
   car_mode = CAR_MODE_REMOTE;
 #else
   car_mode = CAR_MODE_NAVIGATION;
+  car_control_enter_navigation();
 #endif
   emergency_stop = false;
 #if CAR_CONTROL_REMOTE_ENABLED
@@ -69,6 +123,12 @@ void car_control_process(void)
     remote_armed = false;
     route_run_cancel();
     chassis_stop();
+    if (car_mode == CAR_MODE_NAVIGATION) {
+      car_control_enter_navigation();
+    } else {
+      heading_session_leave(&navigation_heading_session);
+      heading_control_stop(&navigation_heading_controller);
+    }
   }
   select_was_down = select_down;
 
@@ -77,13 +137,7 @@ void car_control_process(void)
       emergency_stop = true;
     }
 
-    if (emergency_stop) {
-      chassis_stop();
-    } else if (communication_get_command(&vx_mps, &az_radps)) {
-      chassis_set_velocity(vx_mps, az_radps);
-    } else {
-      chassis_stop();
-    }
+    car_control_process_navigation();
   } else if (remote_control_get_command(&vx_mps, &az_radps)) {
     const encoder_data_t *encoder = encoder_get_data();
     bool was_running = route_run_get_status() == ROUTE_RUN_RUNNING;
@@ -125,11 +179,7 @@ void car_control_process(void)
     chassis_stop();
   }
 #else
-  if (communication_get_command(&vx_mps, &az_radps)) {
-    chassis_set_velocity(vx_mps, az_radps);
-  } else {
-    chassis_stop();
-  }
+  car_control_process_navigation();
 #endif
 
   chassis_process();
@@ -143,4 +193,10 @@ car_mode_t car_control_get_mode(void)
 bool car_control_emergency_stopped(void)
 {
   return emergency_stop;
+}
+
+bool car_control_heading_active(void)
+{
+  return car_mode == CAR_MODE_NAVIGATION &&
+         heading_session_is_active(&navigation_heading_session);
 }

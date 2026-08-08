@@ -39,7 +39,8 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define STATUS_LED_BLINK_MS 250U
+#define STATUS_LED_EMERGENCY_BLINK_MS 250U
+#define STATUS_LED_IMU_BLINK_MS       100U
 
 /* USER CODE END PD */
 
@@ -119,8 +120,10 @@ int main(void)
     static uint32_t last_encoder_ms;
     static uint32_t last_led_ms;
     static bool emergency_was_active;
+    static bool heading_was_active;
     uint32_t now = HAL_GetTick();
     bool emergency_active;
+    bool heading_active;
 
     if (now - last_encoder_ms >= 10U) {
       last_encoder_ms = now;
@@ -130,20 +133,32 @@ int main(void)
     car_control_process();
 
     emergency_active = car_control_emergency_stopped();
+    heading_active = car_control_heading_active();
     if (emergency_active) {
       if (!emergency_was_active) {
         last_led_ms = now;
         led_on();
-      } else if (now - last_led_ms >= STATUS_LED_BLINK_MS) {
+      } else if (now - last_led_ms >= STATUS_LED_EMERGENCY_BLINK_MS) {
         last_led_ms = now;
         led_toggle();
       }
     } else if (car_control_get_mode() == CAR_MODE_NAVIGATION) {
-      led_on();
+      if (heading_active) {
+        if (emergency_was_active || !heading_was_active) {
+          last_led_ms = now;
+          led_on();
+        } else if (now - last_led_ms >= STATUS_LED_IMU_BLINK_MS) {
+          last_led_ms = now;
+          led_toggle();
+        }
+      } else {
+        led_on();
+      }
     } else {
       led_off();
     }
     emergency_was_active = emergency_active;
+    heading_was_active = heading_active;
   }
   /* USER CODE END 3 */
 }

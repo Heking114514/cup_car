@@ -1,6 +1,7 @@
 #ifndef CHASSIS_H
 #define CHASSIS_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /* Tune these two values after measuring the real chassis. */
@@ -28,6 +29,7 @@ void chassis_backward(uint16_t pwm);
 void chassis_turn_left(uint16_t pwm);
 void chassis_turn_right(uint16_t pwm);
 void chassis_stop(void);
+bool chassis_command_is_straight(float vx_mps, float az_radps);
 void chassis_set_velocity(float vx_mps, float az_radps);
 const chassis_feedback_t *chassis_get_feedback(void);
 

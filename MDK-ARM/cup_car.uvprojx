@@ -426,6 +426,16 @@
               <FilePath>../Core/Src/wheel_speed_controller.c</FilePath>
             </File>
             <File>
+              <FileName>heading_control.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/heading_control.c</FilePath>
+            </File>
+            <File>
+              <FileName>heading_session.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/heading_session.c</FilePath>
+            </File>
+            <File>
               <FileName>communication.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/communication.c</FilePath>

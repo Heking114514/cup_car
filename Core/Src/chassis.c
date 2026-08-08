@@ -135,14 +135,18 @@ void chassis_stop(void)
   motor_stop();
 }
 
+bool chassis_command_is_straight(float vx_mps, float az_radps)
+{
+  return chassis_abs(az_radps) <= CHASSIS_STRAIGHT_AZ_EPSILON &&
+         chassis_abs(vx_mps) >= CHASSIS_MOVING_VX_EPSILON;
+}
+
 void chassis_set_velocity(float vx_mps, float az_radps)
 {
   const encoder_data_t *encoder = encoder_get_data();
   float left_speed = vx_mps - az_radps * CHASSIS_TRACK_WIDTH_M * 0.5f;
   float right_speed = vx_mps + az_radps * CHASSIS_TRACK_WIDTH_M * 0.5f;
-  bool straight_requested =
-    chassis_abs(az_radps) <= CHASSIS_STRAIGHT_AZ_EPSILON &&
-    chassis_abs(vx_mps) >= CHASSIS_MOVING_VX_EPSILON;
+  bool straight_requested = chassis_command_is_straight(vx_mps, az_radps);
 
   target_left_mps = chassis_clamp(left_speed, CHASSIS_MAX_WHEEL_SPEED_MPS);
   target_right_mps = chassis_clamp(right_speed, CHASSIS_MAX_WHEEL_SPEED_MPS);

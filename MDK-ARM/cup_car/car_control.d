@@ -5,6 +5,8 @@ cup_car\car_control.o: ../Core/Inc/chassis.h
 cup_car\car_control.o: D:\keil5\ARM\ARMCC\Bin\..\include\stdint.h
 cup_car\car_control.o: ../Core/Inc/communication.h
 cup_car\car_control.o: ../Core/Inc/encoder.h
+cup_car\car_control.o: ../Core/Inc/heading_control.h
+cup_car\car_control.o: ../Core/Inc/heading_session.h
 cup_car\car_control.o: ../Core/Inc/main.h
 cup_car\car_control.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal.h
 cup_car\car_control.o: ../Core/Inc/stm32f1xx_hal_conf.h
