@@ -28,6 +28,7 @@
 #include "car_control.h"
 #include "led.h"
 #include "serial.h"
+#include "telemetry.h"
 
 /* USER CODE END Includes */
 
@@ -106,6 +107,7 @@ int main(void)
   encoder_init();
   serial_init();
   car_control_init();
+  telemetry_init();
   serial_print(SERIAL_DEBUG, "cup_car ready\r\n");
 
   /* USER CODE END 2 */
@@ -131,6 +133,7 @@ int main(void)
     }
 
     car_control_process();
+    telemetry_process();
 
     emergency_active = car_control_emergency_stopped();
     heading_active = car_control_heading_active();

@@ -50,6 +50,7 @@ py -3 record_control.py --port COM5
 ```text
 上位机 -> STM32: vx,az\r\n
 STM32 -> 上位机: ENC,mcu_time_ms,sample_sequence,left_total,right_total\r\n
+STM32 -> 上位机: CTL,time_ms,sample_sequence,mode,estop,rx_valid,rx_age_ms,rx_vx_mmps,rx_wz_mradps,target_left_mmps,target_right_mmps,measured_left_mmps,measured_right_mmps,pwm_left,pwm_right\r\n
 ```
 
 示例：
@@ -57,7 +58,14 @@ STM32 -> 上位机: ENC,mcu_time_ms,sample_sequence,left_total,right_total\r\n
 ```text
 0.250,-1.500
 ENC,1250,125,1234,-1188
+CTL,1250,125,1,0,1,12,250,0,250,250,247,249,612,605
 ```
+
+`ENC` 每 `50 ms` 发送一次，`CTL` 每 `100 ms` 发送一次。`mode=0` 表示遥控
+模式，`mode=1` 表示导航模式；`estop` 和 `rx_valid` 使用 `0/1`。尚未收到过
+速度命令时 `rx_age_ms=4294967295`，收到后超出 `500 ms` 时 `rx_valid=0`，
+但 `rx_age_ms` 和最后一次 `rx_vx/rx_wz` 仍保留，便于区分从未通信和命令超时。
+PWM 为带符号电机输出，其余速度字段均使用整数毫单位。
 
 编码器帧中的时间戳和采样序号均为无符号 32 位数，左右累计计数为有符号
 32 位数。上位机应使用相邻帧的累计计数差计算轮子位移，并使用 MCU 时间戳差

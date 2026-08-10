@@ -7,6 +7,7 @@
 #include "usart.h"
 
 #define SERIAL_RX_BUFFER_SIZE 128U
+#define SERIAL_TX_FORMAT_BUFFER_SIZE 192U
 
 typedef struct {
   uint8_t rx_byte;
@@ -52,7 +53,7 @@ void serial_print(serial_port_t port, const char *text)
 
 void serial_printf(serial_port_t port, const char *format, ...)
 {
-  char buffer[128];
+  char buffer[SERIAL_TX_FORMAT_BUFFER_SIZE];
   va_list args;
   int length;
 

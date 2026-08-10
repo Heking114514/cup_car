@@ -158,13 +158,27 @@ void communication_process(void)
 
 bool communication_get_command(float *vx_mps, float *az_radps)
 {
-  if (!host_command_valid || HAL_GetTick() - last_command_ms > COMMAND_TIMEOUT_MS) {
+  communication_command_status_t status;
+
+  communication_get_command_status(&status);
+  if (!status.valid) {
     return false;
   }
 
-  *vx_mps = host_vx_mps;
-  *az_radps = host_az_radps;
+  *vx_mps = status.vx_mps;
+  *az_radps = status.az_radps;
   return true;
+}
+
+void communication_get_command_status(communication_command_status_t *status)
+{
+  uint32_t now = HAL_GetTick();
+
+  status->received = host_command_valid;
+  status->age_ms = host_command_valid ? now - last_command_ms : UINT32_MAX;
+  status->valid = host_command_valid && status->age_ms <= COMMAND_TIMEOUT_MS;
+  status->vx_mps = host_vx_mps;
+  status->az_radps = host_az_radps;
 }
 
 bool communication_get_rpy(float *roll_rad, float *pitch_rad, float *yaw_rad)
