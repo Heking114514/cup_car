@@ -3,8 +3,8 @@
 #include "main.h"
 #include "tim.h"
 
-#define MOTOR_LEFT_REVERSED  0
-#define MOTOR_RIGHT_REVERSED 1
+#define MOTOR_LEFT_REVERSED  1
+#define MOTOR_RIGHT_REVERSED 0
 
 static int16_t motor_clamp(int16_t value)
 {

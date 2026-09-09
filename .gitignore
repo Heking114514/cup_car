@@ -1,0 +1,46 @@
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# STM32Cube local metadata
+.mxproject
+.settings/
+.project
+.cproject
+
+# Keil uVision user settings and build output
+*.uvguix.*
+*.uvgui.*
+*.uvoptx
+*.o
+*.obj
+*.crf
+*.d
+*.axf
+*.elf
+*.hex
+*.bin
+*.map
+*.lnp
+*.dep
+*.lst
+*.build_log.htm
+MDK-ARM/multi_control_2WD_3UART_MPU6050/
+
+# Local logs and captured telemetry
+*.log
+imu_logs/
+uart3_heading_logs/
+uart3_vx_logs/
+*_logs/

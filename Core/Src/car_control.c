@@ -6,9 +6,13 @@
 #include "heading_control.h"
 #include "heading_session.h"
 #include "main.h"
+#include "mpu6050.h"
 #include "route_run.h"
 
 #define CAR_CONTROL_REMOTE_ENABLED 1
+#define CAR_CONTROL_HEADING_HOLD_ENABLED 1
+#define CAR_CONTROL_GYRO_DEG_TO_RAD 0.01745329252f
+#define CAR_CONTROL_LOW_SPEED_CORRECTION_RATIO 0.80f
 
 #if CAR_CONTROL_REMOTE_ENABLED
 #include "ps2.h"
@@ -17,66 +21,135 @@
 
 static car_mode_t car_mode;
 static bool emergency_stop;
-static heading_controller_t navigation_heading_controller;
-static heading_session_t navigation_heading_session;
+static heading_controller_t straight_heading_controller;
+static heading_session_t imu_heading_session;
+static car_heading_feedback_t heading_feedback;
 #if CAR_CONTROL_REMOTE_ENABLED
 static bool select_was_down;
 static bool r2_was_down;
 static bool remote_armed;
 #endif
 
+static float car_control_abs(float value)
+{
+  return value >= 0.0f ? value : -value;
+}
+
+static float car_control_clamp(float value, float limit)
+{
+  if (value > limit) {
+    return limit;
+  }
+  if (value < -limit) {
+    return -limit;
+  }
+  return value;
+}
+
+static void car_control_release_heading(void)
+{
+  heading_control_stop(&straight_heading_controller);
+  heading_feedback.active = false;
+  heading_feedback.error_rad = 0.0f;
+  heading_feedback.correction_radps = 0.0f;
+}
+
+static void car_control_stop_motion(void)
+{
+  const mpu6050_data_t *imu = mpu6050_get_data();
+  float yaw_rad = imu->yaw_rad;
+
+  car_control_release_heading();
+  heading_feedback.sample_time_ms = imu->sample_time_ms;
+  heading_feedback.imu_valid = mpu6050_get_yaw(&yaw_rad);
+  heading_feedback.target_yaw_rad = yaw_rad;
+  heading_feedback.measured_yaw_rad = yaw_rad;
+  heading_feedback.requested_az_radps = 0.0f;
+  heading_feedback.controlled_az_radps = 0.0f;
+  chassis_stop();
+}
+
+static void car_control_drive(float vx_mps, float requested_az_radps)
+{
+  const mpu6050_data_t *imu = mpu6050_get_data();
+  float yaw_rad = imu->yaw_rad;
+  float controlled_az_radps = requested_az_radps;
+  bool imu_valid = mpu6050_get_yaw(&yaw_rad);
+
+  heading_session_monitor_imu(&imu_heading_session, imu_valid);
+  heading_feedback.sample_time_ms = imu->sample_time_ms;
+  heading_feedback.imu_valid = imu_valid;
+  heading_feedback.measured_yaw_rad = yaw_rad;
+  heading_feedback.requested_az_radps = requested_az_radps;
+
+#if CAR_CONTROL_HEADING_HOLD_ENABLED
+  if (imu_valid && heading_session_is_active(&imu_heading_session) &&
+      chassis_command_is_straight(vx_mps, requested_az_radps)) {
+    float correction;
+    float correction_limit =
+      2.0f * car_control_abs(vx_mps) /
+      CHASSIS_TRACK_WIDTH_M * CAR_CONTROL_LOW_SPEED_CORRECTION_RATIO;
+
+    if (!heading_control_has_target(&straight_heading_controller)) {
+      heading_control_start(&straight_heading_controller, yaw_rad);
+    }
+    correction = heading_control_update(
+      &straight_heading_controller,
+      yaw_rad,
+      imu->yaw_rate_dps * CAR_CONTROL_GYRO_DEG_TO_RAD,
+      imu->sample_time_ms);
+    correction = car_control_clamp(correction, correction_limit);
+    controlled_az_radps += correction;
+    heading_feedback.active = true;
+    heading_feedback.target_yaw_rad =
+      straight_heading_controller.target_yaw_rad;
+    heading_feedback.error_rad = straight_heading_controller.error_rad;
+    heading_feedback.correction_radps = correction;
+  } else
+#endif
+  {
+    car_control_release_heading();
+    heading_feedback.target_yaw_rad = yaw_rad;
+  }
+
+  heading_feedback.controlled_az_radps = controlled_az_radps;
+  chassis_set_velocity(vx_mps, controlled_az_radps);
+}
+
 static void car_control_enter_navigation(void)
 {
-  float roll_rad;
-  float pitch_rad;
-  float yaw_rad = 0.0f;
-  bool imu_valid = communication_get_rpy(&roll_rad, &pitch_rad, &yaw_rad);
-
-  heading_session_enter(&navigation_heading_session, imu_valid);
-  heading_control_stop(&navigation_heading_controller);
+  car_control_release_heading();
 }
 
 static void car_control_process_navigation(void)
 {
   float vx_mps;
   float az_radps;
-  float roll_rad;
-  float pitch_rad;
-  float yaw_rad = 0.0f;
-  bool imu_valid = communication_get_rpy(&roll_rad, &pitch_rad, &yaw_rad);
-
-  heading_session_monitor_imu(&navigation_heading_session, imu_valid);
-  if (!heading_session_is_active(&navigation_heading_session)) {
-    heading_control_stop(&navigation_heading_controller);
-  }
 
   if (emergency_stop) {
-    heading_control_stop(&navigation_heading_controller);
-    chassis_stop();
+    car_control_stop_motion();
   } else if (communication_get_command(&vx_mps, &az_radps)) {
-    bool straight_requested = chassis_command_is_straight(vx_mps, az_radps);
-
-    if (heading_session_is_active(&navigation_heading_session) &&
-        straight_requested) {
-      if (!heading_control_has_target(&navigation_heading_controller)) {
-        heading_control_start(&navigation_heading_controller, yaw_rad);
-      }
-      az_radps += heading_control_update(&navigation_heading_controller, yaw_rad);
-    } else {
-      heading_control_stop(&navigation_heading_controller);
-    }
-    chassis_set_velocity(vx_mps, az_radps);
+    car_control_drive(vx_mps, az_radps);
   } else {
-    heading_control_stop(&navigation_heading_controller);
-    chassis_stop();
+    car_control_stop_motion();
   }
 }
 
 void car_control_init(void)
 {
   chassis_init();
-  heading_control_init(&navigation_heading_controller);
-  heading_session_init(&navigation_heading_session);
+  heading_control_init(&straight_heading_controller);
+  heading_session_init(&imu_heading_session);
+  heading_session_enter(&imu_heading_session, mpu6050_get_yaw(NULL));
+  heading_feedback.sample_time_ms = 0U;
+  heading_feedback.active = false;
+  heading_feedback.imu_valid = false;
+  heading_feedback.target_yaw_rad = 0.0f;
+  heading_feedback.measured_yaw_rad = 0.0f;
+  heading_feedback.error_rad = 0.0f;
+  heading_feedback.correction_radps = 0.0f;
+  heading_feedback.requested_az_radps = 0.0f;
+  heading_feedback.controlled_az_radps = 0.0f;
 #if CAR_CONTROL_REMOTE_ENABLED
   remote_control_init();
 #endif
@@ -94,7 +167,7 @@ void car_control_init(void)
   r2_was_down = false;
   remote_armed = false;
 #endif
-  chassis_stop();
+  car_control_stop_motion();
 }
 
 void car_control_process(void)
@@ -122,12 +195,9 @@ void car_control_process(void)
     emergency_stop = false;
     remote_armed = false;
     route_run_cancel();
-    chassis_stop();
+    car_control_stop_motion();
     if (car_mode == CAR_MODE_NAVIGATION) {
       car_control_enter_navigation();
-    } else {
-      heading_session_leave(&navigation_heading_session);
-      heading_control_stop(&navigation_heading_controller);
     }
   }
   select_was_down = select_down;
@@ -145,17 +215,17 @@ void car_control_process(void)
     route_run_update(encoder->left_total, encoder->right_total, HAL_GetTick());
     if (was_running && route_run_get_status() != ROUTE_RUN_RUNNING) {
       remote_armed = false;
-      chassis_stop();
+      car_control_stop_motion();
     } else if (route_run_get_status() == ROUTE_RUN_RUNNING) {
       if (r1_down) {
         route_run_cancel();
         remote_armed = false;
-        chassis_stop();
+        car_control_stop_motion();
       } else if (route_run_get_command(&vx_mps, &az_radps)) {
         if (vx_mps == 0.0f && az_radps == 0.0f) {
-          chassis_stop();
+          car_control_stop_motion();
         } else {
-          chassis_set_velocity(vx_mps, az_radps);
+          car_control_drive(vx_mps, az_radps);
         }
       }
     } else if (r2_pressed &&
@@ -163,20 +233,20 @@ void car_control_process(void)
       remote_armed = true;
       route_run_start(encoder->left_total, encoder->right_total, HAL_GetTick());
       if (route_run_get_command(&vx_mps, &az_radps)) {
-        chassis_set_velocity(vx_mps, az_radps);
+        car_control_drive(vx_mps, az_radps);
       }
     } else if (!remote_armed) {
       if (vx_mps == 0.0f && az_radps == 0.0f) {
         remote_armed = true;
       }
-      chassis_stop();
+      car_control_stop_motion();
     } else {
-      chassis_set_velocity(vx_mps, az_radps);
+      car_control_drive(vx_mps, az_radps);
     }
   } else {
     route_run_cancel();
     remote_armed = false;
-    chassis_stop();
+    car_control_stop_motion();
   }
 #else
   car_control_process_navigation();
@@ -197,6 +267,10 @@ bool car_control_emergency_stopped(void)
 
 bool car_control_heading_active(void)
 {
-  return car_mode == CAR_MODE_NAVIGATION &&
-         heading_session_is_active(&navigation_heading_session);
+  return heading_feedback.active;
+}
+
+const car_heading_feedback_t *car_control_get_heading_feedback(void)
+{
+  return &heading_feedback;
 }

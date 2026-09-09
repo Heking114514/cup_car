@@ -17,7 +17,12 @@ void heading_session_leave(heading_session_t *session)
 
 void heading_session_monitor_imu(heading_session_t *session, bool imu_valid)
 {
-  if (session->state == HEADING_SESSION_ACTIVE && !imu_valid) {
+  if (session->state == HEADING_SESSION_OFF) {
+    return;
+  }
+  if (imu_valid) {
+    session->state = HEADING_SESSION_ACTIVE;
+  } else if (session->state == HEADING_SESSION_ACTIVE) {
     session->state = HEADING_SESSION_DEGRADED;
   }
 }

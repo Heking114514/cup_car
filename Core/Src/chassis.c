@@ -4,10 +4,11 @@
 #include "motor.h"
 #include "wheel_speed_controller.h"
 
-#define CHASSIS_WHEEL_RADIUS_M          0.0325f
-#define CHASSIS_ENCODER_COUNTS_PER_REV  1925.0f
 #define CHASSIS_LEFT_DISTANCE_SCALE     1.000f
-#define CHASSIS_RIGHT_DISTANCE_SCALE    1.010f
+#define CHASSIS_RIGHT_DISTANCE_SCALE    1.000f
+#define CHASSIS_LEFT_FEEDFORWARD_SCALE  0.930f
+#define CHASSIS_RIGHT_FEEDFORWARD_SCALE 0.915f
+#define CHASSIS_COMMAND_WHEEL_LIMIT_MPS 0.60f
 #define CHASSIS_PI_KP                   800.0f
 #define CHASSIS_PI_KI                   900.0f
 #define CHASSIS_SPEED_FILTER_ALPHA      0.35f
@@ -43,10 +44,11 @@ static float chassis_clamp(float value, float limit)
   return value;
 }
 
-static int16_t chassis_speed_to_pwm(float speed_mps)
+static int16_t chassis_speed_to_pwm(float speed_mps, float feedforward_scale)
 {
   float command = chassis_clamp(speed_mps, CHASSIS_MAX_WHEEL_SPEED_MPS);
   float magnitude;
+  float pwm_float;
   int16_t pwm;
 
   if (command > -0.001f && command < 0.001f) {
@@ -54,9 +56,13 @@ static int16_t chassis_speed_to_pwm(float speed_mps)
   }
 
   magnitude = command >= 0.0f ? command : -command;
-  pwm = (int16_t)((float)MOTOR_PWM_MIN +
-                  magnitude * (float)(MOTOR_PWM_MAX - MOTOR_PWM_MIN) /
-                  CHASSIS_MAX_WHEEL_SPEED_MPS);
+  pwm_float = ((float)MOTOR_PWM_MIN +
+               magnitude * (float)(MOTOR_PWM_MAX - MOTOR_PWM_MIN) /
+               CHASSIS_MAX_WHEEL_SPEED_MPS) * feedforward_scale;
+  if (pwm_float > (float)MOTOR_PWM_MAX) {
+    pwm_float = (float)MOTOR_PWM_MAX;
+  }
+  pwm = (int16_t)(pwm_float + 0.5f);
   return command >= 0.0f ? pwm : -pwm;
 }
 
@@ -65,10 +71,26 @@ static float chassis_abs(float value)
   return value >= 0.0f ? value : -value;
 }
 
-static float chassis_counts_to_distance(int64_t counts, float distance_scale)
+static void chassis_limit_wheel_speeds(float *left_mps, float *right_mps)
+{
+  float left_magnitude = chassis_abs(*left_mps);
+  float right_magnitude = chassis_abs(*right_mps);
+  float maximum_magnitude = left_magnitude > right_magnitude
+                              ? left_magnitude
+                              : right_magnitude;
+
+  if (maximum_magnitude > CHASSIS_COMMAND_WHEEL_LIMIT_MPS) {
+    float scale = CHASSIS_COMMAND_WHEEL_LIMIT_MPS / maximum_magnitude;
+    *left_mps *= scale;
+    *right_mps *= scale;
+  }
+}
+
+static float chassis_counts_to_distance(int64_t counts, float counts_per_rev,
+                                        float distance_scale)
 {
   return (float)counts * 2.0f * CHASSIS_PI * CHASSIS_WHEEL_RADIUS_M /
-         CHASSIS_ENCODER_COUNTS_PER_REV * distance_scale;
+         counts_per_rev * distance_scale;
 }
 
 static float chassis_pwm_to_speed(uint16_t pwm)
@@ -148,8 +170,9 @@ void chassis_set_velocity(float vx_mps, float az_radps)
   float right_speed = vx_mps + az_radps * CHASSIS_TRACK_WIDTH_M * 0.5f;
   bool straight_requested = chassis_command_is_straight(vx_mps, az_radps);
 
-  target_left_mps = chassis_clamp(left_speed, CHASSIS_MAX_WHEEL_SPEED_MPS);
-  target_right_mps = chassis_clamp(right_speed, CHASSIS_MAX_WHEEL_SPEED_MPS);
+  chassis_limit_wheel_speeds(&left_speed, &right_speed);
+  target_left_mps = left_speed;
+  target_right_mps = right_speed;
 
   if (chassis_abs(target_left_mps) < 0.001f &&
       chassis_abs(target_right_mps) < 0.001f) {
@@ -192,9 +215,11 @@ void chassis_process(void)
   }
 
   measured_left_mps = chassis_counts_to_distance(
-    encoder->left_delta, CHASSIS_LEFT_DISTANCE_SCALE) / dt_s;
+    encoder->left_delta, CHASSIS_LEFT_ENCODER_COUNTS_PER_REV,
+    CHASSIS_LEFT_DISTANCE_SCALE) / dt_s;
   measured_right_mps = chassis_counts_to_distance(
-    encoder->right_delta, CHASSIS_RIGHT_DISTANCE_SCALE) / dt_s;
+    encoder->right_delta, CHASSIS_RIGHT_ENCODER_COUNTS_PER_REV,
+    CHASSIS_RIGHT_DISTANCE_SCALE) / dt_s;
 
   chassis_feedback.sample_time_ms = encoder->sample_time_ms;
   chassis_feedback.sample_sequence = encoder->sample_sequence;
@@ -218,8 +243,12 @@ void chassis_process(void)
     int64_t left_counts = (int64_t)encoder->left_total - straight_start_left;
     int64_t right_counts = (int64_t)encoder->right_total - straight_start_right;
     float distance_error =
-      chassis_counts_to_distance(right_counts, CHASSIS_RIGHT_DISTANCE_SCALE) -
-      chassis_counts_to_distance(left_counts, CHASSIS_LEFT_DISTANCE_SCALE);
+      chassis_counts_to_distance(
+        right_counts, CHASSIS_RIGHT_ENCODER_COUNTS_PER_REV,
+        CHASSIS_RIGHT_DISTANCE_SCALE) -
+      chassis_counts_to_distance(
+        left_counts, CHASSIS_LEFT_ENCODER_COUNTS_PER_REV,
+        CHASSIS_LEFT_DISTANCE_SCALE);
     float correction_limit = chassis_abs(target_left_mps) * 0.5f;
     float correction;
 
@@ -237,10 +266,12 @@ void chassis_process(void)
 
   left_pwm = wheel_speed_controller_update(
     &left_controller, controlled_left_mps, measured_left_mps, dt_s,
-    chassis_speed_to_pwm(controlled_left_mps), MOTOR_PWM_MAX);
+    chassis_speed_to_pwm(controlled_left_mps, CHASSIS_LEFT_FEEDFORWARD_SCALE),
+    MOTOR_PWM_MAX);
   right_pwm = wheel_speed_controller_update(
     &right_controller, controlled_right_mps, measured_right_mps, dt_s,
-    chassis_speed_to_pwm(controlled_right_mps), MOTOR_PWM_MAX);
+    chassis_speed_to_pwm(controlled_right_mps, CHASSIS_RIGHT_FEEDFORWARD_SCALE),
+    MOTOR_PWM_MAX);
 
   chassis_feedback.target_left_mps = controlled_left_mps;
   chassis_feedback.target_right_mps = controlled_right_mps;

@@ -5,8 +5,8 @@
 
 #define REMOTE_UPDATE_PERIOD_MS 10U
 #define REMOTE_AXIS_DEADZONE    12
-#define REMOTE_MAX_VX_MPS       0.60f
-#define REMOTE_MAX_AZ_RADPS     2.50f
+#define REMOTE_MAX_VX_MPS       0.20f
+#define REMOTE_MAX_AZ_RADPS     1.00f
 
 static ps2_state_t ps2_state;
 static uint32_t last_update_ms;

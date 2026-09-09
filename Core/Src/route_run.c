@@ -1,8 +1,7 @@
 #include "route_run.h"
 
-#define ROUTE_WHEEL_RADIUS_M          0.0325f
-#define ROUTE_TRACK_WIDTH_M           0.254f
-#define ROUTE_COUNTS_PER_REV          1925.0f
+#include "chassis.h"
+
 #define ROUTE_LINEAR_SPEED_MPS        0.30f
 #define ROUTE_LINEAR_SLOW_SPEED_MPS   0.15f
 #define ROUTE_ANGULAR_SPEED_RADPS     1.00f
@@ -11,7 +10,7 @@
 #define ROUTE_ANGULAR_SLOW_ANGLE_RAD  0.26179939f
 #define ROUTE_SETTLE_MS               500U
 #define ROUTE_TIMEOUT_MS              60000U
-#define ROUTE_IMBALANCE_MIN_COUNTS    500U
+#define ROUTE_IMBALANCE_MIN_COUNTS    270U
 #define ROUTE_PI                      3.14159265f
 
 typedef enum {
@@ -52,14 +51,21 @@ static uint32_t route_abs_delta(int32_t current, int32_t start)
 
 static uint32_t route_linear_counts(float distance_m)
 {
-  float circumference = 2.0f * ROUTE_PI * ROUTE_WHEEL_RADIUS_M;
-  return (uint32_t)(distance_m * ROUTE_COUNTS_PER_REV / circumference + 0.5f);
+  float circumference = 2.0f * ROUTE_PI * CHASSIS_WHEEL_RADIUS_M;
+  return (uint32_t)(distance_m * CHASSIS_LEFT_ENCODER_COUNTS_PER_REV /
+                    circumference + 0.5f);
 }
 
 static uint32_t route_turn_counts(float angle_rad)
 {
-  float wheel_arc = angle_rad * ROUTE_TRACK_WIDTH_M * 0.5f;
+  float wheel_arc = angle_rad * CHASSIS_TRACK_WIDTH_M * 0.5f;
   return route_linear_counts(wheel_arc);
+}
+
+static uint32_t route_reference_counts(uint32_t counts, float counts_per_rev)
+{
+  return (uint32_t)((float)counts * CHASSIS_LEFT_ENCODER_COUNTS_PER_REV /
+                    counts_per_rev + 0.5f);
 }
 
 static uint32_t route_segment_target_counts(const route_segment_t *segment)
@@ -130,8 +136,12 @@ void route_run_update(int32_t left_total, int32_t right_total, uint32_t now_ms)
   }
 
   segment = &route_segments[segment_index];
-  left_counts = route_abs_delta(left_total, segment_start_left);
-  right_counts = route_abs_delta(right_total, segment_start_right);
+  left_counts = route_reference_counts(
+    route_abs_delta(left_total, segment_start_left),
+    CHASSIS_LEFT_ENCODER_COUNTS_PER_REV);
+  right_counts = route_reference_counts(
+    route_abs_delta(right_total, segment_start_right),
+    CHASSIS_RIGHT_ENCODER_COUNTS_PER_REV);
   progress_counts = (uint32_t)(((uint64_t)left_counts + right_counts) / 2U);
 
   if (progress_counts >= route_segment_target_counts(segment)) {

@@ -6,7 +6,9 @@
 
 typedef enum {
   SERIAL_DEBUG = 0,
-  SERIAL_AUX
+  SERIAL_AUX,
+  SERIAL_HOST,
+  SERIAL_PORT_COUNT
 } serial_port_t;
 
 void serial_init(void);

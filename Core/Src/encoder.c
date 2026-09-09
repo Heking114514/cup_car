@@ -3,8 +3,8 @@
 #include "main.h"
 #include "tim.h"
 
-#define ENCODER_LEFT_REVERSED  0
-#define ENCODER_RIGHT_REVERSED 1
+#define ENCODER_LEFT_REVERSED  1
+#define ENCODER_RIGHT_REVERSED 0
 
 static encoder_data_t encoder_data;
 static uint16_t last_left;

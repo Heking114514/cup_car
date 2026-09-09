@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define MOTOR_PWM_MAX 3599
+#define MOTOR_PWM_MAX 1200
 #define MOTOR_PWM_MIN 600
 
 void motor_init(void);
