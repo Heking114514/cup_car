@@ -633,19 +633,6 @@ void mpu6050_set_straight_motion_hint(bool straight_motion,
   }
 }
 
-void mpu6050_start_calibration(void)
-{
-  if (mpu_data.state == MPU6050_STATE_CALIBRATING ||
-      mpu_data.state == MPU6050_STATE_READY) {
-    mpu6050_begin_calibration(HAL_GetTick());
-  }
-}
-
-void mpu6050_zero_yaw(void)
-{
-  mpu_data.yaw_rad = 0.0f;
-}
-
 bool mpu6050_get_yaw(float *yaw_rad)
 {
   if (mpu_data.state != MPU6050_STATE_READY ||

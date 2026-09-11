@@ -11,6 +11,13 @@
 #define CHASSIS_RIGHT_ENCODER_COUNTS_PER_REV    1060.9333f
 #define CHASSIS_MAX_WHEEL_SPEED_MPS             1.000f
 
+typedef enum {
+  CHASSIS_OUTPUT_STOP = 0,
+  CHASSIS_OUTPUT_SPEED,
+  CHASSIS_OUTPUT_PIVOT_PWM,
+  CHASSIS_OUTPUT_BRAKE
+} chassis_output_mode_t;
+
 typedef struct {
   uint32_t sample_time_ms;
   uint32_t sample_sequence;
@@ -23,6 +30,7 @@ typedef struct {
   int16_t left_pwm;
   int16_t right_pwm;
   float sync_error_m;
+  chassis_output_mode_t output_mode;
 } chassis_feedback_t;
 
 void chassis_init(void);
@@ -32,6 +40,8 @@ void chassis_backward(uint16_t pwm);
 void chassis_turn_left(uint16_t pwm);
 void chassis_turn_right(uint16_t pwm);
 void chassis_stop(void);
+void chassis_brake(void);
+void chassis_set_pivot_pwm(int16_t yaw_pwm);
 bool chassis_command_is_straight(float vx_mps, float az_radps);
 void chassis_set_velocity(float vx_mps, float az_radps);
 const chassis_feedback_t *chassis_get_feedback(void);

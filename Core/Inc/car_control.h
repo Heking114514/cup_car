@@ -26,6 +26,7 @@ void car_control_process(void);
 car_mode_t car_control_get_mode(void);
 bool car_control_emergency_stopped(void);
 bool car_control_heading_active(void);
+bool car_control_straight_heading_active(void);
 const car_heading_feedback_t *car_control_get_heading_feedback(void);
 
 #endif

@@ -56,8 +56,6 @@ void mpu6050_set_stationary_hint(bool vehicle_stopped);
 void mpu6050_set_straight_motion_hint(bool straight_motion,
                                       float heading_error_rad,
                                       float heading_correction_radps);
-void mpu6050_start_calibration(void);
-void mpu6050_zero_yaw(void);
 bool mpu6050_get_yaw(float *yaw_rad);
 const mpu6050_data_t *mpu6050_get_data(void);
 

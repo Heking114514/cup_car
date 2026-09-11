@@ -59,7 +59,10 @@ void motor_stop(void)
 
 void motor_brake(void)
 {
-  __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_3, 0);
-  __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_4, 0);
+  /* TB6612 short brake requires IN1=IN2=high and PWM=high. */
+  __HAL_TIM_SET_COMPARE(
+    &htim4, TIM_CHANNEL_3, __HAL_TIM_GET_AUTORELOAD(&htim4) + 1U);
+  __HAL_TIM_SET_COMPARE(
+    &htim4, TIM_CHANNEL_4, __HAL_TIM_GET_AUTORELOAD(&htim4) + 1U);
   HAL_GPIO_WritePin(GPIOB, L_IN1_Pin | L_IN2_Pin | R_IN1_Pin | R_IN2_Pin, GPIO_PIN_SET);
 }

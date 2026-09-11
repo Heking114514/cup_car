@@ -431,6 +431,11 @@
               <FilePath>../Core/Src/heading_control.c</FilePath>
             </File>
             <File>
+              <FileName>turn_control.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/turn_control.c</FilePath>
+            </File>
+            <File>
               <FileName>heading_session.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/heading_session.c</FilePath>

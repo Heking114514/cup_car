@@ -7,7 +7,7 @@
 #include "usart.h"
 
 #define SERIAL_RX_BUFFER_SIZE 128U
-#define SERIAL_TX_BUFFER_SIZE 512U
+#define SERIAL_TX_BUFFER_SIZE 1024U
 #define SERIAL_TX_FORMAT_BUFFER_SIZE 256U
 
 typedef struct {

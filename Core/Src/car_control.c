@@ -7,16 +7,18 @@
 #include "heading_session.h"
 #include "main.h"
 #include "mpu6050.h"
-#include "route_run.h"
+#include "turn_control.h"
 
-#define CAR_CONTROL_REMOTE_ENABLED 1
+#define CAR_CONTROL_REMOTE_ENABLED 0
 #define CAR_CONTROL_HEADING_HOLD_ENABLED 1
 #define CAR_CONTROL_GYRO_DEG_TO_RAD 0.01745329252f
+#define CAR_CONTROL_MDEG_TO_RAD      0.00001745329252f
 #define CAR_CONTROL_LOW_SPEED_CORRECTION_RATIO 0.80f
 
 #if CAR_CONTROL_REMOTE_ENABLED
 #include "ps2.h"
 #include "remote_control.h"
+#include "route_run.h"
 #endif
 
 static car_mode_t car_mode;
@@ -24,6 +26,7 @@ static bool emergency_stop;
 static heading_controller_t straight_heading_controller;
 static heading_session_t imu_heading_session;
 static car_heading_feedback_t heading_feedback;
+static turn_controller_t angle_turn_controller;
 #if CAR_CONTROL_REMOTE_ENABLED
 static bool select_was_down;
 static bool r2_was_down;
@@ -54,12 +57,43 @@ static void car_control_release_heading(void)
   heading_feedback.correction_radps = 0.0f;
 }
 
+static void car_control_sync_turn_feedback(bool imu_valid)
+{
+  const turn_controller_t *turn =
+    turn_control_get_feedback(&angle_turn_controller);
+
+  heading_feedback.sample_time_ms = turn->sample_time_ms;
+  heading_feedback.active = turn_control_is_active(turn);
+  heading_feedback.imu_valid = imu_valid;
+  heading_feedback.target_yaw_rad = turn->target_yaw_rad;
+  heading_feedback.measured_yaw_rad = turn->measured_yaw_rad;
+  heading_feedback.error_rad = turn->error_rad;
+  heading_feedback.correction_radps = turn->requested_rate_radps;
+  heading_feedback.requested_az_radps = 0.0f;
+  heading_feedback.controlled_az_radps = turn->target_rate_radps;
+}
+
+static void car_control_apply_turn_action(void)
+{
+  const turn_controller_t *turn =
+    turn_control_get_feedback(&angle_turn_controller);
+
+  if (turn->action == TURN_CONTROL_ACTION_DRIVE) {
+    chassis_set_pivot_pwm(turn->pivot_pwm);
+  } else if (turn->action == TURN_CONTROL_ACTION_BRAKE) {
+    chassis_brake();
+  } else {
+    chassis_stop();
+  }
+}
+
 static void car_control_stop_motion(void)
 {
   const mpu6050_data_t *imu = mpu6050_get_data();
   float yaw_rad = imu->yaw_rad;
 
   car_control_release_heading();
+  turn_control_cancel(&angle_turn_controller);
   heading_feedback.sample_time_ms = imu->sample_time_ms;
   heading_feedback.imu_valid = mpu6050_get_yaw(&yaw_rad);
   heading_feedback.target_yaw_rad = yaw_rad;
@@ -123,12 +157,63 @@ static void car_control_enter_navigation(void)
 
 static void car_control_process_navigation(void)
 {
+  const mpu6050_data_t *imu = mpu6050_get_data();
+  communication_turn_request_t turn_request;
   float vx_mps;
   float az_radps;
+  float yaw_rad = imu->yaw_rad;
+  bool imu_valid = mpu6050_get_yaw(&yaw_rad);
 
   if (emergency_stop) {
+    communication_clear_commands();
     car_control_stop_motion();
-  } else if (communication_get_command(&vx_mps, &az_radps)) {
+    return;
+  }
+
+  if (communication_take_turn_request(&turn_request)) {
+    float turn_start_yaw_rad = imu_valid ? yaw_rad : 0.0f;
+
+    car_control_release_heading();
+    if (!turn_control_start(
+          &angle_turn_controller,
+          turn_request.sequence,
+          (float)turn_request.relative_angle_mdeg * CAR_CONTROL_MDEG_TO_RAD,
+          turn_request.timeout_ms,
+          turn_start_yaw_rad,
+          HAL_GetTick()) || !imu_valid) {
+      turn_control_imu_fault(&angle_turn_controller);
+    }
+  }
+
+  if (communication_turn_session_selected()) {
+    if (!communication_turn_watchdog_valid()) {
+      turn_control_watchdog_fault(&angle_turn_controller);
+      car_control_sync_turn_feedback(imu_valid);
+      chassis_brake();
+      return;
+    }
+    if (turn_control_is_active(&angle_turn_controller)) {
+      if (!imu_valid) {
+        turn_control_imu_fault(&angle_turn_controller);
+      } else {
+        turn_control_update(
+          &angle_turn_controller,
+          yaw_rad,
+          imu->yaw_rate_dps * CAR_CONTROL_GYRO_DEG_TO_RAD,
+          imu->sample_time_ms,
+          HAL_GetTick());
+      }
+    }
+    car_control_sync_turn_feedback(imu_valid);
+    car_control_apply_turn_action();
+    return;
+  }
+
+  if (turn_control_is_active(&angle_turn_controller)) {
+    turn_control_cancel(&angle_turn_controller);
+  }
+
+  if (communication_get_command(&vx_mps, &az_radps)) {
     car_control_drive(vx_mps, az_radps);
   } else {
     car_control_stop_motion();
@@ -139,6 +224,7 @@ void car_control_init(void)
 {
   chassis_init();
   heading_control_init(&straight_heading_controller);
+  turn_control_init(&angle_turn_controller);
   heading_session_init(&imu_heading_session);
   heading_session_enter(&imu_heading_session, mpu6050_get_yaw(NULL));
   heading_feedback.sample_time_ms = 0U;
@@ -154,8 +240,8 @@ void car_control_init(void)
   remote_control_init();
 #endif
   communication_init();
-  route_run_init();
 #if CAR_CONTROL_REMOTE_ENABLED
+  route_run_init();
   car_mode = CAR_MODE_REMOTE;
 #else
   car_mode = CAR_MODE_NAVIGATION;
@@ -172,16 +258,18 @@ void car_control_init(void)
 
 void car_control_process(void)
 {
+#if CAR_CONTROL_REMOTE_ENABLED
   float vx_mps;
   float az_radps;
-
-  communication_process();
-
-#if CAR_CONTROL_REMOTE_ENABLED
   bool select_down;
   bool r1_down;
   bool r2_down;
   bool r2_pressed;
+#endif
+
+  communication_process();
+
+#if CAR_CONTROL_REMOTE_ENABLED
 
   remote_control_process();
   select_down = remote_control_button_down(PS2_BTN_SELECT);
@@ -195,6 +283,7 @@ void car_control_process(void)
     emergency_stop = false;
     remote_armed = false;
     route_run_cancel();
+    communication_clear_commands();
     car_control_stop_motion();
     if (car_mode == CAR_MODE_NAVIGATION) {
       car_control_enter_navigation();
@@ -212,6 +301,7 @@ void car_control_process(void)
     const encoder_data_t *encoder = encoder_get_data();
     bool was_running = route_run_get_status() == ROUTE_RUN_RUNNING;
 
+    communication_cancel_turn_session();
     route_run_update(encoder->left_total, encoder->right_total, HAL_GetTick());
     if (was_running && route_run_get_status() != ROUTE_RUN_RUNNING) {
       remote_armed = false;
@@ -244,6 +334,7 @@ void car_control_process(void)
       car_control_drive(vx_mps, az_radps);
     }
   } else {
+    communication_cancel_turn_session();
     route_run_cancel();
     remote_armed = false;
     car_control_stop_motion();
@@ -268,6 +359,12 @@ bool car_control_emergency_stopped(void)
 bool car_control_heading_active(void)
 {
   return heading_feedback.active;
+}
+
+bool car_control_straight_heading_active(void)
+{
+  return heading_feedback.active &&
+         !turn_control_is_active(&angle_turn_controller);
 }
 
 const car_heading_feedback_t *car_control_get_heading_feedback(void)

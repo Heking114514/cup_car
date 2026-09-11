@@ -28,11 +28,8 @@
 #include "encoder.h"
 #include "car_control.h"
 #include "chassis.h"
-#include "communication.h"
 #include "led.h"
-#include "motor.h"
 #include "mpu6050.h"
-#include "remote_control.h"
 #include "serial.h"
 #include "telemetry.h"
 
@@ -49,11 +46,6 @@
 #define STATUS_LED_EMERGENCY_BLINK_MS 250U
 #define STATUS_LED_IMU_BLINK_MS       100U
 
-#define ENCODER_JOYSTICK_TEST_ENABLED 0
-#define ENCODER_TEST_PWM              180
-#define ENCODER_TEST_REMOTE_MAX_VX    0.20f
-#define ENCODER_TEST_REMOTE_MAX_AZ    1.00f
-
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -65,12 +57,6 @@
 
 /* USER CODE BEGIN PV */
 
-#if ENCODER_JOYSTICK_TEST_ENABLED
-static bool encoder_test_running;
-static bool encoder_test_armed;
-static bool encoder_test_result_held;
-#endif
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -81,105 +67,6 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-#if ENCODER_JOYSTICK_TEST_ENABLED
-static float encoder_test_abs(float value)
-{
-  return value >= 0.0f ? value : -value;
-}
-
-static int16_t encoder_test_to_pwm(float command)
-{
-  float scaled = command * (float)ENCODER_TEST_PWM;
-
-  return (int16_t)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
-}
-
-static void encoder_joystick_test_init(void)
-{
-  motor_init();
-  remote_control_init();
-  communication_init();
-  encoder_test_running = false;
-  encoder_test_armed = false;
-  encoder_test_result_held = false;
-  led_off();
-  serial_print(SERIAL_HOST, "TEST,READY,JOYSTICK,180\r\n");
-}
-
-static void encoder_joystick_test_process(void)
-{
-  float vx_mps = 0.0f;
-  float az_radps = 0.0f;
-  float drive = 0.0f;
-  float turn = 0.0f;
-  float left_command;
-  float right_command;
-  float maximum;
-  int16_t left_pwm;
-  int16_t right_pwm;
-  bool remote_valid;
-  bool moving;
-
-  remote_control_process();
-  remote_valid = remote_control_get_command(&vx_mps, &az_radps);
-  if (remote_valid) {
-    drive = vx_mps / ENCODER_TEST_REMOTE_MAX_VX;
-    turn = az_radps / ENCODER_TEST_REMOTE_MAX_AZ;
-  }
-
-  left_command = drive - turn;
-  right_command = drive + turn;
-  maximum = encoder_test_abs(left_command);
-  if (encoder_test_abs(right_command) > maximum) {
-    maximum = encoder_test_abs(right_command);
-  }
-  if (maximum > 1.0f) {
-    left_command /= maximum;
-    right_command /= maximum;
-  }
-  left_pwm = encoder_test_to_pwm(left_command);
-  right_pwm = encoder_test_to_pwm(right_command);
-  moving = left_pwm != 0 || right_pwm != 0;
-
-  if (!moving) {
-    if (encoder_test_running) {
-      const encoder_data_t *encoder;
-
-      motor_stop();
-      encoder_update();
-      encoder_test_running = false;
-      encoder_test_result_held = true;
-      led_off();
-      encoder = encoder_get_data();
-      serial_printf(SERIAL_HOST, "TEST,DONE,%ld,%ld\r\n",
-                    (long)encoder->left_total,
-                    (long)encoder->right_total);
-    } else {
-      if (remote_valid) {
-        encoder_test_armed = true;
-      }
-      motor_stop();
-    }
-    return;
-  }
-
-  if (!encoder_test_running && !encoder_test_armed) {
-    motor_stop();
-    return;
-  }
-
-  if (!encoder_test_running) {
-    encoder_reset();
-    encoder_test_running = true;
-    encoder_test_armed = false;
-    encoder_test_result_held = false;
-    led_on();
-    serial_print(SERIAL_HOST, "TEST,RUN\r\n");
-  }
-  motor_set(left_pwm, right_pwm);
-}
-#endif
 
 /* USER CODE END 0 */
 
@@ -225,14 +112,8 @@ int main(void)
   encoder_init();
   serial_init();
   mpu6050_init(&hi2c1);
-#if ENCODER_JOYSTICK_TEST_ENABLED
-  encoder_joystick_test_init();
-  serial_print(SERIAL_DEBUG, "encoder joystick 5pct test ready\r\n");
-#else
   car_control_init();
   telemetry_init();
-  serial_print(SERIAL_DEBUG, "cup_car ready\r\n");
-#endif
 
   /* USER CODE END 2 */
 
@@ -244,38 +125,27 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     static uint32_t last_encoder_ms;
-#if !ENCODER_JOYSTICK_TEST_ENABLED
     static uint32_t last_led_ms;
     static bool emergency_was_active;
     static bool heading_was_active;
-#endif
     uint32_t now = HAL_GetTick();
-#if !ENCODER_JOYSTICK_TEST_ENABLED
     bool emergency_active;
     bool heading_active;
-#endif
 
-#if ENCODER_JOYSTICK_TEST_ENABLED
-    if (!encoder_test_result_held && now - last_encoder_ms >= 10U) {
-#else
     if (now - last_encoder_ms >= 10U) {
-#endif
       last_encoder_ms = now;
       encoder_update();
     }
 
-#if ENCODER_JOYSTICK_TEST_ENABLED
-    communication_process();
-    encoder_joystick_test_process();
-#else
     {
       const chassis_feedback_t *chassis = chassis_get_feedback();
       const car_heading_feedback_t *heading =
         car_control_get_heading_feedback();
       mpu6050_set_stationary_hint(
+        chassis->output_mode == CHASSIS_OUTPUT_STOP &&
         chassis->left_pwm == 0 && chassis->right_pwm == 0);
       mpu6050_set_straight_motion_hint(
-        car_control_heading_active(),
+        car_control_straight_heading_active(),
         heading->error_rad,
         heading->correction_radps);
     }
@@ -310,7 +180,6 @@ int main(void)
     }
     emergency_was_active = emergency_active;
     heading_was_active = heading_active;
-#endif
   }
   /* USER CODE END 3 */
 }

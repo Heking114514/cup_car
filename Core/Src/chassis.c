@@ -1,5 +1,7 @@
 #include "chassis.h"
 
+#include <math.h>
+
 #include "encoder.h"
 #include "motor.h"
 #include "wheel_speed_controller.h"
@@ -32,6 +34,8 @@ static int32_t straight_start_right;
 static uint32_t last_sample_time_ms;
 static uint32_t last_sample_sequence;
 static chassis_feedback_t chassis_feedback;
+static chassis_output_mode_t output_mode;
+static int16_t pivot_pwm;
 
 static float chassis_clamp(float value, float limit)
 {
@@ -113,6 +117,21 @@ static void chassis_reset_control(void)
   chassis_feedback.sync_error_m = 0.0f;
 }
 
+static void chassis_enter_direct_mode(chassis_output_mode_t mode)
+{
+  if (output_mode == CHASSIS_OUTPUT_SPEED) {
+    chassis_reset_control();
+  }
+  straight_tracking = false;
+  target_left_mps = 0.0f;
+  target_right_mps = 0.0f;
+  output_mode = mode;
+  chassis_feedback.output_mode = mode;
+  chassis_feedback.target_left_mps = 0.0f;
+  chassis_feedback.target_right_mps = 0.0f;
+  chassis_feedback.sync_error_m = 0.0f;
+}
+
 void chassis_init(void)
 {
   const encoder_data_t *encoder = encoder_get_data();
@@ -127,6 +146,9 @@ void chassis_init(void)
   last_sample_time_ms = encoder->sample_time_ms;
   last_sample_sequence = encoder->sample_sequence;
   chassis_reset_control();
+  output_mode = CHASSIS_OUTPUT_STOP;
+  pivot_pwm = 0;
+  chassis_feedback.output_mode = output_mode;
 }
 
 void chassis_forward(uint16_t pwm)
@@ -154,7 +176,38 @@ void chassis_turn_right(uint16_t pwm)
 void chassis_stop(void)
 {
   chassis_reset_control();
+  output_mode = CHASSIS_OUTPUT_STOP;
+  pivot_pwm = 0;
+  chassis_feedback.output_mode = output_mode;
   motor_stop();
+}
+
+void chassis_brake(void)
+{
+  chassis_enter_direct_mode(CHASSIS_OUTPUT_BRAKE);
+  pivot_pwm = 0;
+  chassis_feedback.left_pwm = 0;
+  chassis_feedback.right_pwm = 0;
+  motor_brake();
+}
+
+void chassis_set_pivot_pwm(int16_t yaw_pwm)
+{
+  if (yaw_pwm > MOTOR_PWM_MAX) {
+    yaw_pwm = MOTOR_PWM_MAX;
+  } else if (yaw_pwm < -MOTOR_PWM_MAX) {
+    yaw_pwm = -MOTOR_PWM_MAX;
+  }
+  if (yaw_pwm == 0) {
+    chassis_brake();
+    return;
+  }
+
+  chassis_enter_direct_mode(CHASSIS_OUTPUT_PIVOT_PWM);
+  pivot_pwm = yaw_pwm;
+  chassis_feedback.left_pwm = (int16_t)-yaw_pwm;
+  chassis_feedback.right_pwm = yaw_pwm;
+  motor_set((int16_t)-yaw_pwm, yaw_pwm);
 }
 
 bool chassis_command_is_straight(float vx_mps, float az_radps)
@@ -166,19 +219,40 @@ bool chassis_command_is_straight(float vx_mps, float az_radps)
 void chassis_set_velocity(float vx_mps, float az_radps)
 {
   const encoder_data_t *encoder = encoder_get_data();
-  float left_speed = vx_mps - az_radps * CHASSIS_TRACK_WIDTH_M * 0.5f;
-  float right_speed = vx_mps + az_radps * CHASSIS_TRACK_WIDTH_M * 0.5f;
-  bool straight_requested = chassis_command_is_straight(vx_mps, az_radps);
+  float left_speed;
+  float right_speed;
+  bool straight_requested;
 
-  chassis_limit_wheel_speeds(&left_speed, &right_speed);
-  target_left_mps = left_speed;
-  target_right_mps = right_speed;
-
-  if (chassis_abs(target_left_mps) < 0.001f &&
-      chassis_abs(target_right_mps) < 0.001f) {
+  if (!isfinite(vx_mps) || !isfinite(az_radps)) {
     chassis_stop();
     return;
   }
+
+  left_speed = vx_mps - az_radps * CHASSIS_TRACK_WIDTH_M * 0.5f;
+  right_speed = vx_mps + az_radps * CHASSIS_TRACK_WIDTH_M * 0.5f;
+  if (!isfinite(left_speed) || !isfinite(right_speed)) {
+    chassis_stop();
+    return;
+  }
+  straight_requested = chassis_command_is_straight(vx_mps, az_radps);
+
+  chassis_limit_wheel_speeds(&left_speed, &right_speed);
+  if (chassis_abs(left_speed) < 0.001f &&
+      chassis_abs(right_speed) < 0.001f) {
+    chassis_stop();
+    return;
+  }
+
+  if (output_mode != CHASSIS_OUTPUT_SPEED) {
+    wheel_speed_controller_reset(&left_controller);
+    wheel_speed_controller_reset(&right_controller);
+    straight_tracking = false;
+  }
+  output_mode = CHASSIS_OUTPUT_SPEED;
+  pivot_pwm = 0;
+  chassis_feedback.output_mode = output_mode;
+  target_left_mps = left_speed;
+  target_right_mps = right_speed;
 
   if (straight_requested && !straight_tracking) {
     straight_start_left = encoder->left_total;
@@ -225,6 +299,29 @@ void chassis_process(void)
   chassis_feedback.sample_sequence = encoder->sample_sequence;
   chassis_feedback.left_delta = encoder->left_delta;
   chassis_feedback.right_delta = encoder->right_delta;
+
+  if (output_mode != CHASSIS_OUTPUT_SPEED) {
+    chassis_feedback.target_left_mps = 0.0f;
+    chassis_feedback.target_right_mps = 0.0f;
+    chassis_feedback.measured_left_mps = measured_left_mps;
+    chassis_feedback.measured_right_mps = measured_right_mps;
+    chassis_feedback.sync_error_m = 0.0f;
+    chassis_feedback.output_mode = output_mode;
+    if (output_mode == CHASSIS_OUTPUT_PIVOT_PWM) {
+      chassis_feedback.left_pwm = (int16_t)-pivot_pwm;
+      chassis_feedback.right_pwm = pivot_pwm;
+      motor_set((int16_t)-pivot_pwm, pivot_pwm);
+    } else if (output_mode == CHASSIS_OUTPUT_BRAKE) {
+      chassis_feedback.left_pwm = 0;
+      chassis_feedback.right_pwm = 0;
+      motor_brake();
+    } else {
+      chassis_feedback.left_pwm = 0;
+      chassis_feedback.right_pwm = 0;
+      motor_stop();
+    }
+    return;
+  }
 
   if (chassis_abs(target_left_mps) < 0.001f &&
       chassis_abs(target_right_mps) < 0.001f) {
@@ -280,6 +377,7 @@ void chassis_process(void)
   chassis_feedback.left_pwm = left_pwm;
   chassis_feedback.right_pwm = right_pwm;
   chassis_feedback.sync_error_m = sync_error_m;
+  chassis_feedback.output_mode = output_mode;
 
   motor_set(left_pwm, right_pwm);
 }
