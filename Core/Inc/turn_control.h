@@ -89,6 +89,11 @@ void turn_control_update(turn_controller_t *controller,
                          float yaw_rate_radps,
                          uint32_t sample_time_ms,
                          uint32_t now_ms);
+void turn_control_follow_rate(turn_controller_t *controller,
+                              float requested_rate_radps,
+                              float yaw_rate_radps,
+                              uint32_t sample_time_ms,
+                              uint32_t now_ms);
 bool turn_control_is_active(const turn_controller_t *controller);
 const turn_controller_t *turn_control_get_feedback(
   const turn_controller_t *controller);

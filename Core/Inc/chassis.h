@@ -5,8 +5,8 @@
 #include <stdint.h>
 
 /* Measured chassis geometry and pooled independent 10-revolution calibration. */
-#define CHASSIS_WHEEL_RADIUS_M                  0.0313f
-#define CHASSIS_TRACK_WIDTH_M                   0.1408f
+#define CHASSIS_WHEEL_RADIUS_M                  0.0238f
+#define CHASSIS_TRACK_WIDTH_M                   0.1247f
 #define CHASSIS_LEFT_ENCODER_COUNTS_PER_REV     1060.1667f
 #define CHASSIS_RIGHT_ENCODER_COUNTS_PER_REV    1060.9333f
 #define CHASSIS_MAX_WHEEL_SPEED_MPS             1.000f

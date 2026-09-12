@@ -10,6 +10,8 @@
 #define CHASSIS_RIGHT_DISTANCE_SCALE    1.000f
 #define CHASSIS_LEFT_FEEDFORWARD_SCALE  0.930f
 #define CHASSIS_RIGHT_FEEDFORWARD_SCALE 0.915f
+#define CHASSIS_LOW_SPEED_FF_REFERENCE_MPS 0.0280575f
+#define CHASSIS_LOW_SPEED_FF_REFERENCE_PWM 200.0f
 #define CHASSIS_COMMAND_WHEEL_LIMIT_MPS 0.60f
 #define CHASSIS_PI_KP                   800.0f
 #define CHASSIS_PI_KI                   900.0f
@@ -52,6 +54,7 @@ static int16_t chassis_speed_to_pwm(float speed_mps, float feedforward_scale)
 {
   float command = chassis_clamp(speed_mps, CHASSIS_MAX_WHEEL_SPEED_MPS);
   float magnitude;
+  float low_speed_pwm;
   float pwm_float;
   int16_t pwm;
 
@@ -60,9 +63,15 @@ static int16_t chassis_speed_to_pwm(float speed_mps, float feedforward_scale)
   }
 
   magnitude = command >= 0.0f ? command : -command;
-  pwm_float = ((float)MOTOR_PWM_MIN +
-               magnitude * (float)(MOTOR_PWM_MAX - MOTOR_PWM_MIN) /
-               CHASSIS_MAX_WHEEL_SPEED_MPS) * feedforward_scale;
+  pwm_float = (float)MOTOR_PWM_MIN +
+              magnitude * (float)(MOTOR_PWM_MAX - MOTOR_PWM_MIN) /
+              CHASSIS_MAX_WHEEL_SPEED_MPS;
+  low_speed_pwm = magnitude * CHASSIS_LOW_SPEED_FF_REFERENCE_PWM /
+                  CHASSIS_LOW_SPEED_FF_REFERENCE_MPS;
+  if (low_speed_pwm < pwm_float) {
+    pwm_float = low_speed_pwm;
+  }
+  pwm_float *= feedforward_scale;
   if (pwm_float > (float)MOTOR_PWM_MAX) {
     pwm_float = (float)MOTOR_PWM_MAX;
   }

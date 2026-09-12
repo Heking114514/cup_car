@@ -20,6 +20,8 @@
 #define TURN_MAX_DRIVE_PWM                    360.0f
 #define TURN_BREAKAWAY_TIME_MS                20U
 #define TURN_BREAKAWAY_RATE_RADPS             0.03490659f
+#define TURN_BREAKAWAY_COMMAND_RADPS          0.15000000f
+#define TURN_RATE_COMMAND_EPSILON_RADPS        0.00100000f
 #define TURN_OVERSPEED_MARGIN_RADPS           0.13962634f
 #define TURN_OVERSPEED_RELEASE_MARGIN_RADPS   0.06981317f
 #define TURN_ABSOLUTE_RATE_LIMIT_RADPS         1.20000000f
@@ -267,10 +269,8 @@ void turn_control_watchdog_fault(turn_controller_t *controller)
 
 void turn_control_imu_fault(turn_controller_t *controller)
 {
-  if (turn_control_is_active(controller)) {
-    turn_set_terminal(
-      controller, TURN_CONTROL_STATE_IMU_FAULT, TURN_CONTROL_ACTION_BRAKE);
-  }
+  turn_set_terminal(
+    controller, TURN_CONTROL_STATE_IMU_FAULT, TURN_CONTROL_ACTION_BRAKE);
 }
 
 bool turn_control_is_active(const turn_controller_t *controller)
@@ -609,6 +609,254 @@ void turn_control_update(turn_controller_t *controller,
         controller->action = TURN_CONTROL_ACTION_DRIVE;
         controller->brake_reason = TURN_CONTROL_BRAKE_NONE;
       }
+    }
+  }
+}
+
+void turn_control_follow_rate(turn_controller_t *controller,
+                              float requested_rate_radps,
+                              float yaw_rate_radps,
+                              uint32_t sample_time_ms,
+                              uint32_t now_ms)
+{
+  float dt_s = 0.0f;
+  float abs_rate;
+  float requested_magnitude;
+  int8_t requested_direction;
+  bool new_sample;
+
+  if (!isfinite(requested_rate_radps) || !isfinite(yaw_rate_radps)) {
+    turn_set_terminal(
+      controller, TURN_CONTROL_STATE_IMU_FAULT, TURN_CONTROL_ACTION_BRAKE);
+    return;
+  }
+
+  requested_rate_radps = turn_clamp(
+    requested_rate_radps, -TURN_MAX_RATE_RADPS, TURN_MAX_RATE_RADPS);
+  if (turn_abs(requested_rate_radps) <=
+      TURN_RATE_COMMAND_EPSILON_RADPS) {
+    requested_rate_radps = 0.0f;
+  }
+  requested_direction = turn_sign(requested_rate_radps);
+  requested_magnitude = turn_abs(requested_rate_radps);
+  controller->measured_rate_radps = yaw_rate_radps;
+
+  if (turn_abs(yaw_rate_radps) > TURN_ABSOLUTE_RATE_LIMIT_RADPS) {
+    turn_set_terminal(
+      controller, TURN_CONTROL_STATE_RATE_FAULT,
+      TURN_CONTROL_ACTION_BRAKE);
+    return;
+  }
+
+  if ((controller->state == TURN_CONTROL_STATE_IMU_FAULT ||
+       controller->state == TURN_CONTROL_STATE_RATE_FAULT) &&
+      requested_direction != 0) {
+    controller->action = TURN_CONTROL_ACTION_BRAKE;
+    controller->pivot_pwm = 0;
+    return;
+  }
+
+  if (!turn_control_is_active(controller) && requested_direction != 0) {
+    turn_clear_runtime(controller);
+    controller->state = TURN_CONTROL_STATE_RUNNING;
+    controller->action = TURN_CONTROL_ACTION_BRAKE;
+    controller->drive_direction = requested_direction;
+    controller->drive_started_ms = now_ms;
+    controller->breakaway_armed =
+      requested_magnitude >= TURN_BREAKAWAY_COMMAND_RADPS &&
+      turn_abs(yaw_rate_radps) < TURN_BREAKAWAY_RATE_RADPS;
+  }
+
+  new_sample = !controller->timing_valid ||
+               sample_time_ms != controller->sample_time_ms;
+  if (new_sample) {
+    if (controller->timing_valid) {
+      dt_s = (float)(sample_time_ms - controller->sample_time_ms) * 0.001f;
+      if (dt_s < TURN_MIN_SAMPLE_S || dt_s > TURN_MAX_SAMPLE_S) {
+        dt_s = TURN_DEFAULT_SAMPLE_S;
+        controller->rate_integral_rad = 0.0f;
+      }
+    } else {
+      dt_s = TURN_DEFAULT_SAMPLE_S;
+      controller->timing_valid = true;
+    }
+    controller->sample_time_ms = sample_time_ms;
+
+    if (!controller->rate_filter_valid) {
+      controller->filtered_rate_radps = yaw_rate_radps;
+      controller->rate_filter_valid = true;
+    } else {
+      controller->filtered_rate_radps += TURN_RATE_FILTER_ALPHA *
+        (yaw_rate_radps - controller->filtered_rate_radps);
+    }
+  }
+  abs_rate = turn_abs(controller->filtered_rate_radps);
+
+  if (requested_direction == 0) {
+    controller->requested_rate_radps = 0.0f;
+    controller->target_rate_radps = 0.0f;
+    controller->rate_integral_rad = 0.0f;
+    controller->rate_p_term_pwm = 0.0f;
+    controller->rate_i_term_pwm = 0.0f;
+    controller->pivot_pwm = 0;
+    controller->breakaway_armed = false;
+    if (abs_rate > TURN_SETTLED_RATE_RADPS ||
+        turn_abs(yaw_rate_radps) > TURN_SETTLED_RATE_RADPS) {
+      controller->state = TURN_CONTROL_STATE_BRAKING;
+      controller->action = TURN_CONTROL_ACTION_BRAKE;
+      controller->brake_reason = TURN_CONTROL_BRAKE_TARGET_ZONE;
+    } else {
+      controller->state = TURN_CONTROL_STATE_IDLE;
+      controller->action = TURN_CONTROL_ACTION_COAST;
+      controller->brake_reason = TURN_CONTROL_BRAKE_NONE;
+      controller->drive_direction = 0;
+    }
+    return;
+  }
+
+  controller->requested_rate_radps = requested_rate_radps;
+
+  /* Never apply reverse torque while the chassis is still rotating away. */
+  if (controller->filtered_rate_radps * (float)requested_direction <
+        -TURN_BRAKE_RELEASE_RATE_RADPS ||
+      yaw_rate_radps * (float)requested_direction <
+        -TURN_BRAKE_RELEASE_RATE_RADPS) {
+    controller->state = TURN_CONTROL_STATE_BRAKING;
+    controller->action = TURN_CONTROL_ACTION_BRAKE;
+    controller->brake_reason = TURN_CONTROL_BRAKE_REVERSAL;
+    controller->target_rate_radps = 0.0f;
+    controller->rate_integral_rad = 0.0f;
+    controller->rate_p_term_pwm = 0.0f;
+    controller->rate_i_term_pwm = 0.0f;
+    controller->pivot_pwm = 0;
+    controller->breakaway_armed = false;
+    return;
+  }
+
+  if (controller->state == TURN_CONTROL_STATE_BRAKING &&
+      controller->brake_reason == TURN_CONTROL_BRAKE_REVERSAL) {
+    controller->state = TURN_CONTROL_STATE_RUNNING;
+    controller->target_rate_radps = 0.0f;
+    controller->rate_integral_rad = 0.0f;
+    controller->drive_direction = requested_direction;
+    controller->drive_started_ms = now_ms;
+    controller->breakaway_armed =
+      requested_magnitude >= TURN_BREAKAWAY_COMMAND_RADPS &&
+      turn_abs(yaw_rate_radps) < TURN_BREAKAWAY_RATE_RADPS;
+    controller->brake_reason = TURN_CONTROL_BRAKE_NONE;
+  } else if (controller->drive_direction != 0 &&
+             requested_direction != controller->drive_direction) {
+    controller->state = TURN_CONTROL_STATE_BRAKING;
+    controller->action = TURN_CONTROL_ACTION_BRAKE;
+    controller->brake_reason = TURN_CONTROL_BRAKE_REVERSAL;
+    controller->target_rate_radps = 0.0f;
+    controller->rate_integral_rad = 0.0f;
+    controller->rate_p_term_pwm = 0.0f;
+    controller->rate_i_term_pwm = 0.0f;
+    controller->pivot_pwm = 0;
+    controller->breakaway_armed = false;
+    return;
+  }
+
+  if (controller->breakaway_armed &&
+      now_ms - controller->drive_started_ms >= TURN_BREAKAWAY_TIME_MS) {
+    controller->breakaway_armed = false;
+    controller->pivot_pwm = 0;
+    controller->action = TURN_CONTROL_ACTION_BRAKE;
+    controller->brake_reason = TURN_CONTROL_BRAKE_NONE;
+  }
+
+  if (!new_sample) {
+    return;
+  }
+
+  {
+    float maximum_step = TURN_MAX_ACCEL_RADPS2 * dt_s;
+    float rate_step =
+      requested_rate_radps - controller->target_rate_radps;
+
+    rate_step = turn_clamp(rate_step, -maximum_step, maximum_step);
+    controller->target_rate_radps += rate_step;
+    if (controller->target_rate_radps * (float)requested_direction < 0.0f) {
+      controller->target_rate_radps = 0.0f;
+    }
+  }
+
+  {
+    float target_magnitude = turn_abs(controller->target_rate_radps);
+    float measured_along =
+      controller->filtered_rate_radps * (float)requested_direction;
+    float raw_measured_along =
+      yaw_rate_radps * (float)requested_direction;
+    float overspeed_rate = measured_along;
+    float rate_error;
+    float candidate_integral;
+    float unsaturated_pwm;
+    float output_pwm;
+    bool accept_integral;
+    bool overspeed_braking =
+      controller->action == TURN_CONTROL_ACTION_BRAKE &&
+      controller->brake_reason == TURN_CONTROL_BRAKE_OVERSPEED;
+
+    if (raw_measured_along > overspeed_rate) {
+      overspeed_rate = raw_measured_along;
+    }
+
+    rate_error = target_magnitude - measured_along;
+    candidate_integral = turn_clamp(
+      controller->rate_integral_rad + rate_error * dt_s,
+      -TURN_RATE_INTEGRAL_LIMIT_RAD, TURN_RATE_INTEGRAL_LIMIT_RAD);
+    unsaturated_pwm = TURN_RATE_KP_PWM * rate_error +
+      TURN_RATE_KI_PWM * candidate_integral;
+    output_pwm = turn_clamp(
+      unsaturated_pwm, 0.0f, TURN_MAX_DRIVE_PWM);
+    accept_integral =
+      unsaturated_pwm == output_pwm ||
+      (unsaturated_pwm > TURN_MAX_DRIVE_PWM && rate_error < 0.0f) ||
+      (unsaturated_pwm < 0.0f && rate_error > 0.0f);
+
+    if (accept_integral) {
+      controller->rate_integral_rad = candidate_integral;
+    }
+    controller->rate_p_term_pwm = TURN_RATE_KP_PWM * rate_error;
+    controller->rate_i_term_pwm =
+      TURN_RATE_KI_PWM * controller->rate_integral_rad;
+    unsaturated_pwm = controller->rate_p_term_pwm +
+      controller->rate_i_term_pwm;
+    output_pwm = turn_clamp(
+      unsaturated_pwm, 0.0f, TURN_MAX_DRIVE_PWM);
+
+    if (controller->breakaway_armed &&
+        now_ms - controller->drive_started_ms < TURN_BREAKAWAY_TIME_MS &&
+        raw_measured_along < TURN_BREAKAWAY_RATE_RADPS &&
+        output_pwm < TURN_BREAKAWAY_PWM) {
+      output_pwm = TURN_BREAKAWAY_PWM;
+    }
+    if (now_ms - controller->drive_started_ms >= TURN_BREAKAWAY_TIME_MS ||
+        raw_measured_along >= TURN_BREAKAWAY_RATE_RADPS) {
+      controller->breakaway_armed = false;
+    }
+
+    controller->output_saturated = output_pwm != unsaturated_pwm;
+    controller->state = TURN_CONTROL_STATE_RUNNING;
+    if (overspeed_rate > target_magnitude +
+        (overspeed_braking
+           ? TURN_OVERSPEED_RELEASE_MARGIN_RADPS
+           : TURN_OVERSPEED_MARGIN_RADPS)) {
+      controller->pivot_pwm = 0;
+      controller->action = TURN_CONTROL_ACTION_BRAKE;
+      controller->brake_reason = TURN_CONTROL_BRAKE_OVERSPEED;
+      controller->breakaway_armed = false;
+      controller->output_saturated = true;
+    } else if (!controller->breakaway_armed && output_pwm < 0.5f) {
+      controller->pivot_pwm = 0;
+      controller->action = TURN_CONTROL_ACTION_BRAKE;
+      controller->brake_reason = TURN_CONTROL_BRAKE_NONE;
+    } else {
+      controller->pivot_pwm = turn_round_pwm(
+        output_pwm * (float)requested_direction);
+      controller->action = TURN_CONTROL_ACTION_DRIVE;
+      controller->brake_reason = TURN_CONTROL_BRAKE_NONE;
     }
   }
 }

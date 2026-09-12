@@ -14,6 +14,8 @@
 #define CAR_CONTROL_GYRO_DEG_TO_RAD 0.01745329252f
 #define CAR_CONTROL_MDEG_TO_RAD      0.00001745329252f
 #define CAR_CONTROL_LOW_SPEED_CORRECTION_RATIO 0.80f
+#define CAR_CONTROL_PIVOT_VX_EPSILON_MPS       0.01f
+#define CAR_CONTROL_PIVOT_AZ_EPSILON_RADPS     0.001f
 
 #if CAR_CONTROL_REMOTE_ENABLED
 #include "ps2.h"
@@ -27,6 +29,7 @@ static heading_controller_t straight_heading_controller;
 static heading_session_t imu_heading_session;
 static car_heading_feedback_t heading_feedback;
 static turn_controller_t angle_turn_controller;
+static turn_controller_t rate_turn_controller;
 #if CAR_CONTROL_REMOTE_ENABLED
 static bool select_was_down;
 static bool r2_was_down;
@@ -47,6 +50,13 @@ static float car_control_clamp(float value, float limit)
     return -limit;
   }
   return value;
+}
+
+static bool car_control_rate_turn_pending(void)
+{
+  return turn_control_is_active(&rate_turn_controller) ||
+         rate_turn_controller.state == TURN_CONTROL_STATE_IMU_FAULT ||
+         rate_turn_controller.state == TURN_CONTROL_STATE_RATE_FAULT;
 }
 
 static void car_control_release_heading(void)
@@ -73,11 +83,8 @@ static void car_control_sync_turn_feedback(bool imu_valid)
   heading_feedback.controlled_az_radps = turn->target_rate_radps;
 }
 
-static void car_control_apply_turn_action(void)
+static void car_control_apply_turn_action(const turn_controller_t *turn)
 {
-  const turn_controller_t *turn =
-    turn_control_get_feedback(&angle_turn_controller);
-
   if (turn->action == TURN_CONTROL_ACTION_DRIVE) {
     chassis_set_pivot_pwm(turn->pivot_pwm);
   } else if (turn->action == TURN_CONTROL_ACTION_BRAKE) {
@@ -94,6 +101,7 @@ static void car_control_stop_motion(void)
 
   car_control_release_heading();
   turn_control_cancel(&angle_turn_controller);
+  turn_control_init(&rate_turn_controller);
   heading_feedback.sample_time_ms = imu->sample_time_ms;
   heading_feedback.imu_valid = mpu6050_get_yaw(&yaw_rad);
   heading_feedback.target_yaw_rad = yaw_rad;
@@ -115,6 +123,45 @@ static void car_control_drive(float vx_mps, float requested_az_radps)
   heading_feedback.imu_valid = imu_valid;
   heading_feedback.measured_yaw_rad = yaw_rad;
   heading_feedback.requested_az_radps = requested_az_radps;
+
+  if (car_control_rate_turn_pending() ||
+      (car_control_abs(vx_mps) <= CAR_CONTROL_PIVOT_VX_EPSILON_MPS &&
+       car_control_abs(requested_az_radps) >
+         CAR_CONTROL_PIVOT_AZ_EPSILON_RADPS)) {
+    const turn_controller_t *turn;
+    float rate_command =
+      car_control_abs(vx_mps) <= CAR_CONTROL_PIVOT_VX_EPSILON_MPS
+        ? requested_az_radps
+        : 0.0f;
+
+    car_control_release_heading();
+    heading_feedback.target_yaw_rad = yaw_rad;
+    heading_feedback.error_rad = 0.0f;
+    if (!imu_valid) {
+      turn_control_imu_fault(&rate_turn_controller);
+      heading_feedback.active = false;
+      heading_feedback.controlled_az_radps = 0.0f;
+      chassis_brake();
+      return;
+    }
+
+    turn_control_follow_rate(
+      &rate_turn_controller,
+      rate_command,
+      imu->yaw_rate_dps * CAR_CONTROL_GYRO_DEG_TO_RAD,
+      imu->sample_time_ms,
+      HAL_GetTick());
+    turn = turn_control_get_feedback(&rate_turn_controller);
+    heading_feedback.active = turn_control_is_active(turn);
+    heading_feedback.controlled_az_radps = turn->target_rate_radps;
+    if (car_control_abs(vx_mps) <= CAR_CONTROL_PIVOT_VX_EPSILON_MPS ||
+        turn_control_is_active(turn)) {
+      car_control_apply_turn_action(turn);
+      return;
+    }
+  }
+
+  turn_control_init(&rate_turn_controller);
 
 #if CAR_CONTROL_HEADING_HOLD_ENABLED
   if (imu_valid && heading_session_is_active(&imu_heading_session) &&
@@ -174,6 +221,7 @@ static void car_control_process_navigation(void)
     float turn_start_yaw_rad = imu_valid ? yaw_rad : 0.0f;
 
     car_control_release_heading();
+    turn_control_init(&rate_turn_controller);
     if (!turn_control_start(
           &angle_turn_controller,
           turn_request.sequence,
@@ -205,7 +253,8 @@ static void car_control_process_navigation(void)
       }
     }
     car_control_sync_turn_feedback(imu_valid);
-    car_control_apply_turn_action();
+    car_control_apply_turn_action(
+      turn_control_get_feedback(&angle_turn_controller));
     return;
   }
 
@@ -225,6 +274,7 @@ void car_control_init(void)
   chassis_init();
   heading_control_init(&straight_heading_controller);
   turn_control_init(&angle_turn_controller);
+  turn_control_init(&rate_turn_controller);
   heading_session_init(&imu_heading_session);
   heading_session_enter(&imu_heading_session, mpu6050_get_yaw(NULL));
   heading_feedback.sample_time_ms = 0U;
@@ -364,7 +414,8 @@ bool car_control_heading_active(void)
 bool car_control_straight_heading_active(void)
 {
   return heading_feedback.active &&
-         !turn_control_is_active(&angle_turn_controller);
+         !turn_control_is_active(&angle_turn_controller) &&
+         !turn_control_is_active(&rate_turn_controller);
 }
 
 const car_heading_feedback_t *car_control_get_heading_feedback(void)
