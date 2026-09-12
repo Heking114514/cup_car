@@ -43,46 +43,62 @@ static Subscriber_t *gimbal_feed_sub;          // 云台反馈信息订阅者
 static Gimbal_Upload_Data_s gimbal_fetch_data; // 从云台获取的反馈信息
 static attitude_t *chassis_IMU_data;
 float v_debug=4000.0;
+
+#define CHASSIS_MOTOR_LEFT_ID 1u
+#define CHASSIS_MOTOR_RIGHT_ID 2u
+
 void ChassisInit()
 {
     chassis_IMU_data = INS_Init();
     // 四个轮子的参数一样,改tx_id和反转标志位即可
     Motor_Init_Config_s chassis_motor_config = {
-        .can_init_config.can_handle = &hcan1,
+        .can_init_config = {
+            .can_handle = &hcan1,
+            .tx_id = CHASSIS_MOTOR_LEFT_ID,
+        },
         .controller_param_init_config = {
-            .speed_PID = {
-                .Kp = 10, // 4.5
-                .Ki = 0,  // 0
-                .Kd = 0,  // 0
-                .DeadBand = 200,
-                .IntegralLimit = 8000,
-                .Improve = PID_Trapezoid_Intergral | PID_Integral_Limit | PID_Derivative_On_Measurement ,
-                .MaxOut = 16000,
-                .MaxOut_ = -16000},
-            .current_PID = {
-                .Kp = 15, // 0.4
-                .Ki = 0,   // 0
+            .angle_PID = {
+                // 如果启用位置环来控制发弹,需要较大的I值保证输出力矩的线性度否则出现接近拨出的力矩大幅下降
+                .Kp = 1000, // 10
+                .Ki = 0,
                 .Kd = 0,
-                .IntegralLimit = 5000,
-                .Improve = PID_Trapezoid_Intergral | PID_Integral_Limit | PID_Derivative_On_Measurement,
+                .MaxOut = 10000,
+                .MaxOut_ = -10000
+            },
+            .speed_PID = {
+                .Kp = 0.6f,
+                .Ki = 0.02f,
+                .Kd = 0,
+                .Improve = PID_Integral_Limit,
+                .IntegralLimit = 2500,
+                .MaxOut = 7000,
+                .MaxOut_ = -7000
+            },
+            .current_PID = {
+                .Kp = 0.5f,
+                .Ki = 0,
+                .Kd = 0,
+                .Improve = PID_IMPROVE_NONE,
+                .IntegralLimit = 0,
                 .MaxOut = 10000,
                 .MaxOut_ = -10000
             },
         },
         .controller_setting_init_config = {
-            .angle_feedback_source = MOTOR_FEED,
-            .speed_feedback_source = MOTOR_FEED,
+            .angle_feedback_source = MOTOR_FEED, .speed_feedback_source = MOTOR_FEED,
             .outer_loop_type = SPEED_LOOP,
             .close_loop_type = SPEED_LOOP | CURRENT_LOOP,
+            .motor_reverse_flag = MOTOR_DIRECTION_NORMAL, // 注意方向设置为拨盘的拨出的击发方向
         },
-        .motor_type = M3508,
+        .motor_type = M2006
     };
     //  @todo: 当前还没有设置电机的正反转,仍然需要手动添加reference的正负号,需要电机module的支持,待修改.
-    chassis_motor_config.can_init_config.tx_id = 5;
+    // 实际电调 ID：左轮 1，右轮 2。两台电机共用 0x200，分别使用第 1、2 个电流槽位。
+    chassis_motor_config.can_init_config.tx_id = CHASSIS_MOTOR_LEFT_ID;
     chassis_motor_config.controller_setting_init_config.motor_reverse_flag = MOTOR_DIRECTION_REVERSE;
     motor_l = DJIMotorInit(&chassis_motor_config);
 
-    chassis_motor_config.can_init_config.tx_id = 1;
+    chassis_motor_config.can_init_config.tx_id = CHASSIS_MOTOR_RIGHT_ID;
     chassis_motor_config.controller_setting_init_config.motor_reverse_flag = MOTOR_DIRECTION_NORMAL;
     motor_r = DJIMotorInit(&chassis_motor_config);
 
@@ -107,6 +123,7 @@ void ChassisTask()
 #ifdef ONE_BOARD
     SubGetMessage(chassis_sub, &chassis_cmd_recv);
 #endif
+
     if(fabsf(chassis_cmd_recv.v)<50&&fabsf(chassis_cmd_recv.w)<50)
     {
         DJIMotorStop(motor_l);
@@ -117,6 +134,7 @@ void ChassisTask()
         DJIMotorEnable(motor_l);
         DJIMotorEnable(motor_r);
     }
+
     DJIMotorSetRef(motor_l,chassis_cmd_recv.v-chassis_cmd_recv.w);
     DJIMotorSetRef(motor_r,chassis_cmd_recv.v+chassis_cmd_recv.w);
 }

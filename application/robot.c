@@ -19,7 +19,6 @@
 #include "robot_cmd.h"
 #endif
 
-
 void RobotInit()
 {  
     // 关闭中断,防止在初始化过程中发生中断
