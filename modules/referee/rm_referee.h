@@ -29,14 +29,23 @@ typedef struct
 	ext_game_result_t GameResult;						   // 0x0002
 	ext_game_robot_HP_t GameRobotHP;					   // 0x0003
 	ext_event_data_t EventData;							   // 0x0101
-	ext_supply_projectile_action_t SupplyProjectileAction; // 0x0102
+	//ext_supply_projectile_action_t SupplyProjectileAction; // 0x0102
+	ext_referee_warning_t RefereeWarning;                  // 0x0104 新增 裁判警告数据
+    ext_dart_info_t DartInfo;                              // 0x0105 新增 飞镖发射相关数据
 	ext_game_robot_state_t GameRobotState;				   // 0x0201
 	ext_power_heat_data_t PowerHeatData;				   // 0x0202
 	ext_game_robot_pos_t GameRobotPos;					   // 0x0203
-	ext_buff_musk_t BuffMusk;							   // 0x0204
+	ext_buff_t Buff;							   		   // 0x0204
 	aerial_robot_energy_t AerialRobotEnergy;			   // 0x0205
 	ext_robot_hurt_t RobotHurt;							   // 0x0206
 	ext_shoot_data_t ShootData;							   // 0x0207
+	ext_projectile_allowance_t ProjectileAllowance;		   // 0x208  新增 允许发弹量
+    ext_rfid_status_t RfidStatus;                          // 0x0209 新增 机器人 RFID 模块状态
+    ext_dart_client_cmd_t DartClientCmd;                   // 0x020A 新增 飞镖选手端指令数据
+    ext_ground_robot_position_t GroundRobotPosition;       // 0x020B 新增
+    ext_radar_mark_progress_t RadarMarkProgress;           // 0x020C 新增
+    ext_sentry_info_t SentryInfo;                          // 0x020D 新增
+    ext_radar_info_t RadarInfo;                            // 0x020E 新增
 
 	// 自定义交互数据的接收
 	Communicate_ReceiveData_t ReceiveData;

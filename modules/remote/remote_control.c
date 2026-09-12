@@ -7,14 +7,16 @@
 #include "bsp_log.h"
 
 #define REMOTE_CONTROL_FRAME_SIZE 18u // 遥控器接收的buffer大小
-
+#define SBUS 1
+// #define DBUS 1
 // 遥控器数据
-static RC_ctrl_t rc_ctrl[2];     //[0]:当前数据TEMP,[1]:上一次的数据LAST.用于按键持续按下和切换的判断
+uint8_t lost_control=0;
+ static RC_ctrl_t rc_ctrl[2];     //[0]:当前数据TEMP,[1]:上一次的数据LAST.用于按键持续按下和切换的判断
 static uint8_t rc_init_flag = 0; // 遥控器初始化标志位
-
 // 遥控器拥有的串口实例,因为遥控器是单例,所以这里只有一个,就不封装了
 static USARTInstance *rc_usart_instance;
 static DaemonInstance *rc_daemon_instance;
+uint8_t sbus_rx_sta = 0;
 
 /**
  * @brief 矫正遥控器摇杆的值,超过660或者小于-660的值都认为是无效值,置0
@@ -34,6 +36,7 @@ static void RectifyRCjoystick()
  */
 static void sbus_to_rc(const uint8_t *sbus_buf)
 {
+    #ifdef DBUS       //DBUS通信协议
     // 摇杆,直接解算时减去偏置
     rc_ctrl[TEMP].rc.rocker_r_ = ((sbus_buf[0] | (sbus_buf[1] << 8)) & 0x07ff) - RC_CH_VALUE_OFFSET;                              //!< Channel 0
     rc_ctrl[TEMP].rc.rocker_r1 = (((sbus_buf[1] >> 3) | (sbus_buf[2] << 5)) & 0x07ff) - RC_CH_VALUE_OFFSET;                       //!< Channel 1
@@ -85,8 +88,90 @@ static void sbus_to_rc(const uint8_t *sbus_buf)
     }
 
     memcpy(&rc_ctrl[LAST], &rc_ctrl[TEMP], sizeof(RC_ctrl_t)); // 保存上一次的数据,用于按键持续按下和切换的判断
-}
+    #endif
 
+    #ifdef SBUS  //SBUS通信协议
+
+    if ((sbus_buf[0] == 0x0F)&&sbus_buf[24]==0x00)
+		{
+			sbus_rx_sta = 1;
+            lost_control=1;
+		}
+		else
+		{
+			sbus_rx_sta=0;
+            lost_control=0;
+		}
+
+		if(sbus_rx_sta==1)
+        {
+    rc_ctrl[TEMP].rc.rocker_r_ =((sbus_buf[1] | (sbus_buf[2] << 8)) & 0x07ff) - RC_CH_VALUE_OFFSET;                      //!< Channel 0
+    rc_ctrl[TEMP].rc.rocker_r1 =(((sbus_buf[2] >> 3) | (sbus_buf[3] << 5)) & 0x07ff) - RC_CH_VALUE_OFFSET;                             //!< Channel 1
+    rc_ctrl[TEMP].rc.rocker_l1 =(((sbus_buf[3] >> 6) | (sbus_buf[4] << 2) | (sbus_buf[5] << 10)) & 0x07ff) - RC_CH_VALUE_OFFSET;       //!< Channel 2   
+    rc_ctrl[TEMP].rc.rocker_l_ = (((sbus_buf[5] >> 1) | (sbus_buf[6] << 7)) & 0x07ff) - RC_CH_VALUE_OFFSET;                //!< Channel 3
+    rc_ctrl[TEMP].rc.a[4] = (((sbus_buf[7] << 4) | (sbus_buf[6] >>4)) & 0x07ff) - RC_CH_VALUE_OFFSET;
+    rc_ctrl[TEMP].rc.a[5] =((sbus_buf[9]<<9)   | (sbus_buf[8]<<1) | (sbus_buf[7]>>7)) & 0x07ff- RC_CH_VALUE_OFFSET;
+    rc_ctrl[TEMP].rc.a[6] =((sbus_buf[10]<<6)  | (sbus_buf[9]>>2)) & 0x07ff- RC_CH_VALUE_OFFSET;  //右侧上中下
+    rc_ctrl[TEMP].rc.a[7] =((sbus_buf[11]<<3)  | (sbus_buf[10]>>5)) & 0x07ff- RC_CH_VALUE_OFFSET;  //右侧上下  发单
+    rc_ctrl[TEMP].rc.a[8] =((sbus_buf[13]<<8)  | (sbus_buf[12])) & 0x07ff- RC_CH_VALUE_OFFSET;
+    rc_ctrl[TEMP].rc.a[9] =((sbus_buf[14]<<5)  | (sbus_buf[13]>>3)) & 0x07ff- RC_CH_VALUE_OFFSET;
+    rc_ctrl[TEMP].rc.a[10]=((sbus_buf[16]<<10) | (sbus_buf[15]<<2) | (sbus_buf[14]>>6)) & 0x07ff- RC_CH_VALUE_OFFSET;
+    rc_ctrl[TEMP].rc.a[11]=((sbus_buf[17]<<7)  | (sbus_buf[16]>>1)) & 0x07ff- RC_CH_VALUE_OFFSET;
+    rc_ctrl[TEMP].rc.a[12]=((sbus_buf[18]<<4)  | (sbus_buf[17]>>4)) & 0x07ff- RC_CH_VALUE_OFFSET;
+    rc_ctrl[TEMP].rc.a[13]=((sbus_buf[20]<<9)  | (sbus_buf[19]<<1) | (sbus_buf[18]>>7)) & 0x07ff- RC_CH_VALUE_OFFSET;
+    rc_ctrl[TEMP].rc.a[14]=((sbus_buf[21]<<6)  | (sbus_buf[20]>>2)) & 0x07ff- RC_CH_VALUE_OFFSET;
+    rc_ctrl[TEMP].rc.a[15]=((sbus_buf[22]<<3)  | (sbus_buf[21]>>5)) & 0x07ff- RC_CH_VALUE_OFFSET;
+    //右侧三档 SC 上为小陀螺 中为随动 下为普通
+    if(rc_ctrl[TEMP].rc.a[5] == 159)
+    {rc_ctrl[TEMP].rc.switch_right = 3;}
+    else if(rc_ctrl[TEMP].rc.a[5] == 97)
+    {rc_ctrl[TEMP].rc.switch_right = 1;}
+    else if(rc_ctrl[TEMP].rc.a[5] == 0)
+    {rc_ctrl[TEMP].rc.switch_right = 2;}
+
+    //左侧三档 SB
+    if(rc_ctrl[TEMP].rc.a[4] == 159)
+    {rc_ctrl[TEMP].rc.switch_left = 3;}
+    else if(rc_ctrl[TEMP].rc.a[4] == 97)
+    {rc_ctrl[TEMP].rc.switch_left = 1;}
+    else if(rc_ctrl[TEMP].rc.a[4] == 0)
+    {rc_ctrl[TEMP].rc.switch_left = 2;}
+
+    //夹爪 SE
+    if(rc_ctrl[TEMP].rc.a[6] == 159)
+    {rc_ctrl[TEMP].rc.dial = 3;}
+    else if(rc_ctrl[TEMP].rc.a[6] == 97)
+    {rc_ctrl[TEMP].rc.dial = 1;}
+    else if(rc_ctrl[TEMP].rc.a[6] == 0)
+    {rc_ctrl[TEMP].rc.dial = 2;}   
+    // 控制自定义控制器
+    if(rc_ctrl[TEMP].rc.a[7] == 159)
+    {rc_ctrl[TEMP].rc.sa = 3;}
+    else if(rc_ctrl[TEMP].rc.a[7] == 97)
+    {rc_ctrl[TEMP].rc.sa = 1;}
+    else if(rc_ctrl[TEMP].rc.a[7] == 0)
+    {rc_ctrl[TEMP].rc.sa = 2;}   
+
+        //右侧 SC
+    if(rc_ctrl[TEMP].rc.a[5] == 159)
+    {rc_ctrl[TEMP].rc.sc = 3;}
+    else if(rc_ctrl[TEMP].rc.a[5] == 97)
+    {rc_ctrl[TEMP].rc.sc = 1;}
+    else if(rc_ctrl[TEMP].rc.a[5] == 0)
+    {rc_ctrl[TEMP].rc.sc = 2;}
+
+        //右侧 SD
+    if(rc_ctrl[TEMP].rc.a[8] == 159)
+    {rc_ctrl[TEMP].rc.sd = 3;}
+    else if(rc_ctrl[TEMP].rc.a[8] == 97)
+    {rc_ctrl[TEMP].rc.sd = 1;}
+    else if(rc_ctrl[TEMP].rc.a[8] == 0)
+    {rc_ctrl[TEMP].rc.sd = 2;}
+
+
+}
+#endif   
+}
 /**
  * @brief 对sbus_to_rc的简单封装,用于注册到bsp_usart的回调函数中
  *
@@ -103,6 +188,7 @@ static void RemoteControlRxCallback()
  */
 static void RCLostCallback(void *id)
 {
+    lost_control=0;
     memset(rc_ctrl, 0, sizeof(rc_ctrl)); // 清空遥控器数据
     USARTServiceInit(rc_usart_instance); // 尝试重新启动接收
     LOGWARNING("[rc] remote control lost");

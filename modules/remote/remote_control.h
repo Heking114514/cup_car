@@ -95,10 +95,15 @@ typedef struct
         int16_t rocker_l1; // 左竖直
         int16_t rocker_r_; // 右水平
         int16_t rocker_r1; // 右竖直
-        int16_t dial;      // 侧边拨轮
+        int16_t dial;      // 侧边拨轮 SE
+        
+        uint8_t sa;         //左侧拨杆SA
+        uint8_t sc;
+        uint8_t sd;
 
         uint8_t switch_left;  // 左侧开关
         uint8_t switch_right; // 右侧开关
+        uint8_t a[16];
     } rc;
     struct
     {
@@ -112,7 +117,7 @@ typedef struct
 
     uint8_t key_count[3][16];
 } RC_ctrl_t;
-
+extern uint8_t lost_control;
 /* ------------------------- Internal Data ----------------------------------- */
 
 /**

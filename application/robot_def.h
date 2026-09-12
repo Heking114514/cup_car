@@ -17,11 +17,9 @@
 
 /* 开发板类型定义,烧录时注意不要弄错对应功能;修改定义后需要重新编译,只能存在一个定义! */
 #define ONE_BOARD // 单板控制整车
-// #define CHASSIS_BOARD //底盘板
-// #define GIMBAL_BOARD // 云台板
 
-// #define VISION_USE_VCP // 使用虚拟串口发送视觉数据
-#define VISION_USE_UART // 使用串口发送视觉数据
+#define VISION_USE_VCP // 使用虚拟串口发送视觉数据
+//#define VISION_USE_UART // 使用串口发送视觉数据
 
 /* 机器人重要参数定义,注意根据不同机器人进行修改,浮点数需要以.0或f结尾,无符号以u结尾 */
 // 云台参数
@@ -144,17 +142,8 @@ typedef struct
 typedef struct
 {
     // 控制部分
-    float vx;           // 前进方向速度 Vx
-    float vy;           // 横移方向速度 Vy
-    float wz;           // 旋转速度     w
-    float offset_angle; // 底盘和归中位置的夹角
-    chassis_mode_e chassis_mode;
-    uint16_t chassis_power_limit; // 底盘功率限制,单位W
-    // UI部分
-    //  ...
-    int friction_mode;
-    int bullet_speed;
-    uint16_t cap_power;
+    float v;           // 前进方向速度 Vx
+    float w;           // 横移方向速度 Vy
 } Chassis_Ctrl_Cmd_s;
 
 // cmd发布的云台控制数据,由gimbal订阅
@@ -206,6 +195,15 @@ typedef struct
     Bullet_Speed_e bullet_speed; // 弹速限制
     Enemy_Color_e enemy_color;   // 0 for blue, 1 for red
 } Chassis_Upload_Data_s;
+
+typedef struct
+{
+   uint16_t life;
+   uint8_t color;
+   uint16_t allowance_17mm;
+   uint8_t game_progress;
+
+} Referee_Upload_Data_s;
 
 typedef struct
 {

@@ -110,6 +110,7 @@ bsp/can/bsp_can.c \
 bsp/usart/bsp_usart.c \
 bsp/log/bsp_log.c \
 bsp/bsp_tools.c \
+bsp/usb/bsp_usb.c \
 modules/algorithm/controller.c \
 modules/algorithm/kalman_filter.c \
 modules/algorithm/QuaternionEKF.c \
@@ -143,12 +144,12 @@ modules/message_center/message_center.c \
 modules/daemon/daemon.c \
 modules/buffer/buffer.c \
 modules/alarm/buzzer.c \
+modules/power_meter/power_meter.c\
 application/gimbal/gimbal.c \
 application/chassis/chassis.c \
 application/shoot/shoot.c \
 application/cmd/robot_cmd.c \
 application/robot.c \
-application/chassis/chassis_power_control.c \
 Core/Src/i2c.c
 
 # ASM sources
@@ -238,6 +239,7 @@ C_INCLUDES =  \
 -Ibsp/iic \
 -Ibsp/log \
 -Ibsp/pwm \
+-Ibsp/usb \
 -Ibsp \
 -Imodules/algorithm \
 -Imodules/bluetooth \
@@ -261,6 +263,7 @@ C_INCLUDES =  \
 -Imodules/daemon \
 -Imodules/alarm \
 -Imodules/buffer \
+-Imodules/power_meter \
 -Imodules \
 -IMiddlewares/ST/ARM/DSP/Inc \
 -IMiddlewares/ST/ARM/DSP/Include/dsp \

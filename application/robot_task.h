@@ -47,11 +47,7 @@ void OSTaskInit()
 
     osThreadDef(robottask, StartROBOTTASK, osPriorityNormal, 0, 1024);
     robotTaskHandle = osThreadCreate(osThread(robottask), NULL);
-#if defined(ONE_BOARD) || defined(CHASSIS_BOARD)
-    osThreadDef(uitask, StartUITASK, osPriorityNormal, 0, 512);
-    uiTaskHandle = osThreadCreate(osThread(uitask), NULL);
-#endif
-    GOMotorControlInit();
+    
     //HTMotorControlInit(); // 没有注册HT电机则不会执行
 }
 
@@ -122,7 +118,7 @@ __attribute__((noreturn)) void StartROBOTTASK(void const *argument)
         robot_dt = DWT_GetTimeline_ms() - robot_start;
         if (robot_dt > 5)
             LOGERROR("[freeRTOS] ROBOT core Task is being DELAY! dt = [%f]", &robot_dt);
-        osDelay(5);
+        osDelay(10);
     }
 }
 
@@ -136,6 +132,6 @@ __attribute__((noreturn)) void StartUITASK(void const *argument)
         
         // 每给裁判系统发送一包数据会挂起一次,详见UITask函数的refereeSend()
         UITask();
-        osDelay(1); // 即使没有任何UI需要刷新,也挂起一次,防止卡在UITask中无法切换
+        osDelay(5); // 即使没有任何UI需要刷新,也挂起一次,防止卡在UITask中无法切换
     }
 }

@@ -66,6 +66,15 @@ typedef struct
     uint8_t init;
 } INS_t;
 
+/**
+ * @brief 获取当前姿态角（欧拉角）
+ * @param yaw   偏航角指针（输出）
+ * @param pitch 俯仰角指针（输出）
+ * @param roll  横滚角指针（输出）
+ */
+void INS_GetAttitude(float *yaw, float *pitch, float *roll);
+
+
 /* 用于修正安装误差的参数 */
 typedef struct
 {

@@ -22,6 +22,7 @@
 #include "arm_math.h"
 
 static INS_t INS;
+
 static IMU_Param_t IMU_Param;
 static PIDInstance TempCtrl = {0};
 
@@ -169,7 +170,6 @@ void INS_Task(void)
         INS.Gyro[2] = QEKF_INS.Gyro[2];
         INS.YawTotalAngle = QEKF_INS.YawTotalAngle;
 
-        VisionSetAltitude(INS.Yaw, INS.Pitch, INS.Roll);
     }
 
     // temperature control
@@ -183,6 +183,14 @@ void INS_Task(void)
     {
         // 1Hz 可以加入monitor函数,检查IMU是否正常运行/离线
     }
+}
+
+//方便外界拿数据|2026wu我不知道正常怎么拿，就这样吧
+void INS_GetAttitude(float *yaw, float *pitch, float *roll)
+{
+    if (yaw) *yaw = INS.Yaw;
+    if (pitch) *pitch = INS.Pitch;
+    if (roll) *roll = INS.Roll;
 }
 
 /**
