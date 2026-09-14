@@ -66,21 +66,33 @@ static void f_Integral_Limit(PIDInstance *pid)
 static void f_Derivative_On_Measurement(PIDInstance *pid)
 {
     // pid->Dout = pid->Kd * (pid->Last_Output - pid->Output) / pid->dt;
-    pid->Dout = pid->Kd * (pid->Last_Measure - pid->Measure) / pid->dt;
+    pid->Dout = pid->Kd != 0.0f
+        ? pid->Kd * (pid->Last_Measure - pid->Measure) / pid->dt
+        : 0.0f;
 }
 
 // 微分滤波(采集微分时,滤除高频噪声)
 static void f_Derivative_Filter(PIDInstance *pid)
 {
-    pid->Dout = pid->Dout * pid->dt / (pid->Derivative_LPF_RC + pid->dt) +
-                pid->Last_Dout * pid->Derivative_LPF_RC / (pid->Derivative_LPF_RC + pid->dt);
+    float denominator = pid->Derivative_LPF_RC + pid->dt;
+
+    if (denominator <= 0.0f || !isfinite(denominator))
+        return;
+
+    pid->Dout = pid->Dout * pid->dt / denominator +
+                pid->Last_Dout * pid->Derivative_LPF_RC / denominator;
 }
 
 // 输出滤波
 static void f_Output_Filter(PIDInstance *pid)
 {
-    pid->Output = pid->Output * pid->dt / (pid->Output_LPF_RC + pid->dt) +
-                  pid->Last_Output * pid->Output_LPF_RC / (pid->Output_LPF_RC + pid->dt);
+    float denominator = pid->Output_LPF_RC + pid->dt;
+
+    if (denominator <= 0.0f || !isfinite(denominator))
+        return;
+
+    pid->Output = pid->Output * pid->dt / denominator +
+                  pid->Last_Output * pid->Output_LPF_RC / denominator;
 }
 
 // 输出限幅
@@ -155,6 +167,8 @@ float PIDCalculate(PIDInstance *pid, float measure, float ref)
         f_PID_ErrorHandle(pid);
 
     pid->dt = DWT_GetDeltaT(&pid->DWT_CNT); // 获取两次pid计算的时间间隔,用于积分和微分
+    if (pid->dt <= 0.0f || !isfinite(pid->dt))
+        pid->dt = 0.001f;
 
     // 保存上次的测量值和误差,计算当前error
     pid->Measure = measure;
@@ -167,7 +181,9 @@ float PIDCalculate(PIDInstance *pid, float measure, float ref)
         // 基本的pid计算,使用位置式
         pid->Pout = pid->Kp * pid->Err;
         pid->ITerm = pid->Ki * pid->Err * pid->dt;
-        pid->Dout = pid->Kd * (pid->Err - pid->Last_Err) / pid->dt;
+        pid->Dout = pid->Kd != 0.0f
+            ? pid->Kd * (pid->Err - pid->Last_Err) / pid->dt
+            : 0.0f;
         // 梯形积分
         if (pid->Improve & PID_Trapezoid_Intergral)
             f_Trapezoid_Intergral(pid);
@@ -185,6 +201,8 @@ float PIDCalculate(PIDInstance *pid, float measure, float ref)
             f_Integral_Limit(pid);
 
         pid->Iout += pid->ITerm;                         // 累加积分
+        if (!isfinite(pid->Iout))
+            pid->Iout = 0.0f;
         pid->Output = pid->Pout + pid->Iout + pid->Dout; // 计算输出
 
         // 输出滤波
@@ -202,6 +220,12 @@ float PIDCalculate(PIDInstance *pid, float measure, float ref)
 
         // 输出限幅
         f_Output_Limit(pid);
+        if (!isfinite(pid->Output))
+        {
+            pid->Output = 0.0f;
+            pid->Iout = 0.0f;
+            pid->Dout = 0.0f;
+        }
     }
     else // 进入死区, 则清空积分和输出
     {

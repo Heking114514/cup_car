@@ -59,7 +59,7 @@ static uint16_t crc_ccitt_byte(uint16_t crc, const uint8_t c)
  */
 uint16_t crc_ccitt(uint8_t *buffer, size_t len)
 {
-	uint16_t crc;
+	uint16_t crc = 0;
 	while (len--)
 		crc = crc_ccitt_byte(crc, *buffer++);
 	return crc;

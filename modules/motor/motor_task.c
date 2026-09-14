@@ -1,8 +1,11 @@
 #include "motor_task.h"
 #include "dji_motor.h"
 
+static volatile uint32_t motor_control_task_ticks;
+
 void MotorControlTask()
 {
+    motor_control_task_ticks++;
     // static uint8_t cnt = 0; 设定不同电机的任务频率
     // if(cnt%5==0) //200hz
     // if(cnt%10==0) //100hz
@@ -16,4 +19,9 @@ void MotorControlTask()
     // 将所有的CAN设备集中在一处发送,最高反馈频率仅能达到500Hz,为了更好的控制效果,应使用新的HTMotorControlInit()接口
 
     // StepMotorControl();
+}
+
+uint32_t MotorControlTaskTicks(void)
+{
+    return motor_control_task_ticks;
 }

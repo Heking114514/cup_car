@@ -43,10 +43,10 @@
 #define RADIUS_WHEEL 30.2f          // 轮胎外径60.4 mm对应的半径
 #define REDUCTION_RATIO_WHEEL 36.0f // M2006 P36；手转10圈验证约为294912 count/轮圈
 #define REAL_WZ_RAT   1000
-#define CHASSIS_YAW_HOLD_DIR 1.0f       // 若实车直行修正方向反了，改为 -1.0f
-#define CHASSIS_YAW_HOLD_KP 80.0f       // yaw误差(deg)到差速w参考的比例
-#define CHASSIS_YAW_HOLD_KI 8.0f        // 小残差长期存在时的积分纠偏
-#define CHASSIS_YAW_HOLD_KD 3.0f        // gyro_z(deg/s)阻尼
+#define CHASSIS_YAW_HOLD_DIR -1.0f      // 实车直行修正方向
+#define CHASSIS_YAW_HOLD_KP 75.0f       // yaw误差(deg)到差速w参考的比例
+#define CHASSIS_YAW_HOLD_KI 3.0f        // 小残差长期存在时的积分纠偏
+#define CHASSIS_YAW_HOLD_KD 4.0f        // gyro_z(deg/s)阻尼
 #define CHASSIS_YAW_HOLD_DEADBAND 0.12f // 小角度死区，减少静止漂移抖动
 #define CHASSIS_YAW_HOLD_MAX_RATIO 0.25f
 #define CHASSIS_YAW_HOLD_MAX_REF 1600.0f
@@ -261,9 +261,9 @@ typedef union float_uint16
 #undef CHASSIS_YAW_HOLD_MAX_REF
 #undef CHASSIS_YAW_HOLD_I_MAX_RATIO
 #undef CHASSIS_YAW_HOLD_I_MAX_REF
-#define CHASSIS_YAW_HOLD_KP 80.0f
-#define CHASSIS_YAW_HOLD_KI 8.0f
-#define CHASSIS_YAW_HOLD_KD 3.0f
+#define CHASSIS_YAW_HOLD_KP 75.0f
+#define CHASSIS_YAW_HOLD_KI 3.0f
+#define CHASSIS_YAW_HOLD_KD 4.0f
 #define CHASSIS_YAW_HOLD_DEADBAND 0.12f
 #define CHASSIS_YAW_HOLD_MAX_RATIO 0.25f
 #define CHASSIS_YAW_HOLD_MAX_REF 1600.0f

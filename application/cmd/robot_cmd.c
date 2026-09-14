@@ -87,8 +87,8 @@ void RobotCMDInit()
  */
 static void NavigationControlSet()
 {
-    chassis_cmd_send.v = vision_recv_data->v * NAV_LINEAR_REF_PER_MPS;
-    chassis_cmd_send.w = vision_recv_data->w * NAV_ANGULAR_REF_PER_RADPS;
+    chassis_cmd_send.v = -vision_recv_data->v * NAV_LINEAR_REF_PER_MPS;
+    chassis_cmd_send.w = -vision_recv_data->w * NAV_ANGULAR_REF_PER_RADPS;
 
 #if CHASSIS_USE_INS
     INS_GetAttitude(&INS_CMD.Yaw, &INS_CMD.Pitch, &INS_CMD.Roll);

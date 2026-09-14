@@ -12,10 +12,10 @@ static USARTInstance *hc05_usart_instance;    // HC05串口通信实例
 static uint8_t hc05_init_flag = 0;  // HC05初始化标志位
 
 // *hc05_usart_instance串口回调函数
-static void HC05RxCallback()
+static void HC05RxCallback(USARTInstance *instance)
 {
     uint8_t *rxbuff;
-    rxbuff = hc05_usart_instance->recv_buff;
+    rxbuff = instance->recv_buff;
 
     // 帧头帧尾判断
     if(rxbuff[0] == FRAME_HEAD && rxbuff[HC05_BUFFERSIZE - 1] == FRAME_END)

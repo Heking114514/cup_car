@@ -42,13 +42,13 @@ void OSTaskInit()
 #endif
     // // 后续修改为读取传感器数据准备好的中断处理,
 
-    osThreadDef(motortask, StartMOTORTASK, osPriorityNormal, 0, 256);
+    osThreadDef(motortask, StartMOTORTASK, osPriorityNormal, 0, 512);
     motorTaskHandle = osThreadCreate(osThread(motortask), NULL);
 
     osThreadDef(daemontask, StartDAEMONTASK, osPriorityNormal, 0, 128);
     daemonTaskHandle = osThreadCreate(osThread(daemontask), NULL);
 
-    osThreadDef(robottask, StartROBOTTASK, osPriorityNormal, 0, 1024);
+    osThreadDef(robottask, StartROBOTTASK, osPriorityNormal, 0, 1536);
     robotTaskHandle = osThreadCreate(osThread(robottask), NULL);
     
     //HTMotorControlInit(); // 没有注册HT电机则不会执行

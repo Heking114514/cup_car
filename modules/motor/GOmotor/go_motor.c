@@ -17,7 +17,6 @@ static osThreadId go_task_handle[GO_MOTOR_CNT];
 static void DecodeGOIMotor(USARTInstance *_instance)
 {
     
-    uint16_t crc;
     if(_instance->recv_buff[0] == 0xfd && _instance->recv_buff[1] == 0xee)
     {
         for (size_t i = 0; i < GO_MOTOR_CNT; i++)
@@ -57,7 +56,7 @@ static void GOMotorPacker(GOMotorInstance* _instance)
     _instance->ctrl_send.pos_set = _instance->ctrl_set.pos_des * 16384 / PI;
     _instance->ctrl_send.Kpos = _instance->ctrl_set.Kp * 1280;
     _instance->ctrl_send.Kspd = _instance->ctrl_set.Kd * 1280;
-    _instance->ctrl_send.crc = crc_ccitt(&_instance->ctrl_send, 14);
+    _instance->ctrl_send.crc = crc_ccitt((uint8_t *)&_instance->ctrl_send, 14);
 }
 
 static void GOMotorSend(GOMotorInstance* _instance)

@@ -13,7 +13,7 @@ typedef enum
     lock,
     foc,
     cali
-};
+} GOMotorMode_e;
 
 typedef struct SetMode
 {
@@ -70,7 +70,7 @@ typedef struct GOMotorInstance
     uint8_t rs485_flag;
 
     DaemonInstance* daemon;
-    unsigned int feed_cnt;
+    uint32_t feed_cnt;
     float dt;
     /* data */
 }GOMotorInstance;
@@ -88,5 +88,4 @@ GOMotorInstance *GOmotorInit(Other_Motor_Init_Config_s config);
 
 
 #endif // !GO_MOTOR_H
-
 

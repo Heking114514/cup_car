@@ -134,10 +134,10 @@ static void JudgeReadData(uint8_t *buff)
 }
 
 /*裁判系统串口接收回调函数,解析数据 */
-static void RefereeRxCallback()
+static void RefereeRxCallback(USARTInstance *instance)
 {
 	DaemonReload(referee_daemon);
-	JudgeReadData(referee_usart_instance->recv_buff);
+	JudgeReadData(instance->recv_buff);
 }
 // 裁判系统丢失回调函数,重新初始化裁判系统串口
 static void RefereeLostCallback(void *arg)

@@ -658,7 +658,7 @@ class StraightLineTestApp:
 
     def log_telemetry(self, timestamp: str, received_s: float, line: str) -> None:
         fields = [field.strip() for field in line.split(",")]
-        if not fields or fields[0] not in ("ENC", "CTL", "ATT", "HLD"):
+        if not fields or fields[0] not in ("ENC", "CTL", "ATT", "HLD", "PHY", "MTR"):
             return
         frame_type = fields[0]
         row: dict[str, object] = {
@@ -678,6 +678,8 @@ class StraightLineTestApp:
                 "CTL": 15,
                 "ATT": 8,
                 "HLD": 7,
+                "PHY": 10,
+                "MTR": 16,
             }
             expected_fields = expected_fields_by_type[frame_type]
             if len(fields) != expected_fields:
@@ -696,8 +698,22 @@ class StraightLineTestApp:
                 row.update(self.update_control(values))
             elif frame_type == "ATT":
                 row.update(self.update_attitude(values))
-            else:
+            elif frame_type == "HLD":
                 row.update(self.update_heading_hold(values))
+            elif frame_type == "PHY":
+                row.update(
+                    {
+                        "mcu_time_ms": values[0],
+                        "sequence": values[1],
+                    }
+                )
+            else:
+                row.update(
+                    {
+                        "mcu_time_ms": values[0],
+                        "sequence": values[1],
+                    }
+                )
             row["run_active"] = int(self.run_active)
             row["requested_vx_mps"] = f"{self.requested_vx_mps:.6f}"
             row["requested_az_radps"] = f"{self.requested_az_radps:.6f}"
@@ -727,7 +743,7 @@ class StraightLineTestApp:
     def handle_line(self, timestamp: str, received_s: float, line: str) -> None:
         self.write_raw(timestamp, "RX", line)
         self.log_telemetry(timestamp, received_s, line)
-        if line.startswith(("ENC,", "CTL,", "ATT,", "HLD,")):
+        if line.startswith(("ENC,", "CTL,", "ATT,", "HLD,", "MTR,", "PHY,")):
             self.append_stream(f"{timestamp}  {line}")
         else:
             self.append_stream(line)

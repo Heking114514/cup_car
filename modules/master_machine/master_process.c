@@ -16,18 +16,18 @@ static void (*vision_application_callback)(void);
 static USARTInstance *vision_usart_instance[2] = {0};
 static DaemonInstance *vision_daemon_instance[2] = {0};
 
-static void DecodeVision(void)
+static void DecodeVision(USARTInstance *instance)
 {
     uint16_t flag_register;
-    get_protocol_info(vision_usart_instance[0]->recv_buff, &flag_register, (uint8_t *)&recv_data.v);
+    get_protocol_info(instance->recv_buff, &flag_register, (uint8_t *)&recv_data.v);
     if (vision_application_callback)
         vision_application_callback();
 }
 
-static void DecodeNav(void)
+static void DecodeNav(USARTInstance *instance)
 {
     uint16_t flag_register;
-    get_protocol_info(vision_usart_instance[1]->recv_buff, &flag_register, (uint8_t *)&recv_data_nav.vx);
+    get_protocol_info(instance->recv_buff, &flag_register, (uint8_t *)&recv_data_nav.vx);
     if (vision_application_callback)
         vision_application_callback();
 }
