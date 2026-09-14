@@ -20,6 +20,8 @@
 
 #define VISION_USE_VCP // 使用虚拟串口发送视觉数据
 //#define VISION_USE_UART // 使用串口发送视觉数据
+#define CHASSIS_USE_INS 0             // 旧INS任务不参与本车导航控制
+#define CHASSIS_USE_BMI088_YAW_HOLD 1 // 轻量BMI088 yaw估计参与直行航向辅助
 
 /* 机器人重要参数定义,注意根据不同机器人进行修改,浮点数需要以.0或f结尾,无符号以u结尾 */
 // 云台参数
@@ -32,18 +34,28 @@
 #define ONE_BULLET_DELTA_ANGLE 36    // 发射一发弹丸拨盘转动的距离,由机械设计图纸给出
 #define REDUCTION_RATIO_LOADER 49.0f // 拨盘电机的减速比,英雄需要修改为3508的19.0f
 #define NUM_PER_CIRCLE 10            // 拨盘一圈的装载量
-// 机器人底盘修改的参数,单位为mm(毫米)
-#define WHEEL_BASE 350              // 纵向轴距(前进后退方向)
-#define TRACK_WIDTH 300             // 横向轮距(左右平移方向)
+// 两轮差速底盘实测参数,单位为mm(毫米)
+#define CHASSIS_LENGTH 148.5f       // 整车外廓长度
+#define CHASSIS_WIDTH 153.5f        // 整车外廓宽度
+#define TRACK_WIDTH 146.6f          // 左右轮中心距
 #define CENTER_GIMBAL_OFFSET_X 0    // 云台旋转中心距底盘几何中心的距离,前后方向,云台位于正中心时默认设为0
 #define CENTER_GIMBAL_OFFSET_Y 0    // 云台旋转中心距底盘几何中心的距离,左右方向,云台位于正中心时默认设为0
-#define RADIUS_WHEEL 60             // 轮子半径
-#define REDUCTION_RATIO_WHEEL 19.0f // 电机减速比,因为编码器量测的是转子的速度而不是输出轴的速度故需进行转换
+#define RADIUS_WHEEL 30.2f          // 轮胎外径60.4 mm对应的半径
+#define REDUCTION_RATIO_WHEEL 36.0f // M2006 P36；手转10圈验证约为294912 count/轮圈
 #define REAL_WZ_RAT   1000
+#define CHASSIS_YAW_HOLD_DIR 1.0f       // 若实车直行修正方向反了，改为 -1.0f
+#define CHASSIS_YAW_HOLD_KP 80.0f       // yaw误差(deg)到差速w参考的比例
+#define CHASSIS_YAW_HOLD_KI 8.0f        // 小残差长期存在时的积分纠偏
+#define CHASSIS_YAW_HOLD_KD 3.0f        // gyro_z(deg/s)阻尼
+#define CHASSIS_YAW_HOLD_DEADBAND 0.12f // 小角度死区，减少静止漂移抖动
+#define CHASSIS_YAW_HOLD_MAX_RATIO 0.25f
+#define CHASSIS_YAW_HOLD_MAX_REF 1600.0f
+#define CHASSIS_YAW_HOLD_I_MAX_RATIO 0.10f
+#define CHASSIS_YAW_HOLD_I_MAX_REF 700.0f
 #define GYRO2GIMBAL_DIR_YAW 1   // 陀螺仪数据相较于云台的yaw的方向,1为相同,-1为相反
 #define GYRO2GIMBAL_DIR_PITCH -1 // 陀螺仪数据相较于云台的pitch的方向,1为相同,-1为相反
 #define GYRO2GIMBAL_DIR_ROLL -1  // 陀螺仪数据相较于云台的roll的方向,1为相同,-1为相反
-#define HUBS_NUMBER 4 // 轮子数量,底盘是四轮全向轮,如果是两轮差速轮需要修改为2,如果是平衡步兵需要修改为2
+#define HUBS_NUMBER 2 // 两轮差速底盘
 
 
 // 检查是否出现主控板定义冲突,只允许一个开发板定义存在,否则编译会自动报错
@@ -231,5 +243,31 @@ typedef union float_uint16
     uint16_t u[2];
     /* data */
 }float_uint16_t;
+
+/* Final control-path overrides for the two-wheel navigation build.
+ * Keep the legacy INS task disabled; the straight-line yaw hold uses the
+ * lightweight BMI088 diagnostic estimator instead.
+ */
+#undef CHASSIS_USE_INS
+#define CHASSIS_USE_INS 0
+#undef CHASSIS_USE_BMI088_YAW_HOLD
+#define CHASSIS_USE_BMI088_YAW_HOLD 1
+
+#undef CHASSIS_YAW_HOLD_KP
+#undef CHASSIS_YAW_HOLD_KI
+#undef CHASSIS_YAW_HOLD_KD
+#undef CHASSIS_YAW_HOLD_DEADBAND
+#undef CHASSIS_YAW_HOLD_MAX_RATIO
+#undef CHASSIS_YAW_HOLD_MAX_REF
+#undef CHASSIS_YAW_HOLD_I_MAX_RATIO
+#undef CHASSIS_YAW_HOLD_I_MAX_REF
+#define CHASSIS_YAW_HOLD_KP 80.0f
+#define CHASSIS_YAW_HOLD_KI 8.0f
+#define CHASSIS_YAW_HOLD_KD 3.0f
+#define CHASSIS_YAW_HOLD_DEADBAND 0.12f
+#define CHASSIS_YAW_HOLD_MAX_RATIO 0.25f
+#define CHASSIS_YAW_HOLD_MAX_REF 1600.0f
+#define CHASSIS_YAW_HOLD_I_MAX_RATIO 0.10f
+#define CHASSIS_YAW_HOLD_I_MAX_REF 700.0f
 
 #endif // !ROBOT_DEF_H

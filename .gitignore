@@ -1,1 +1,5 @@
 /build
+/build_verify/
+/__pycache__/
+/encoder_calibration_logs/
+/straight_test_logs/

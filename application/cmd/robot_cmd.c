@@ -2,7 +2,6 @@
 #include "robot_def.h"
 #include "robot_cmd.h"
 // module
-#include "remote_control.h"
 #include "ins_task.h"
 #include "master_process.h"
 #include "message_center.h"
@@ -19,6 +18,10 @@
 // @todo 8191转换成360的精度太低,会损失精度
 #define YAW_ALIGN_ANGLE (YAW_CHASSIS_ALIGN_ECD * ECD_ANGLE_COEF_DJI) // 对齐时的角度,0-360
 #define PTICH_HORIZON_ANGLE (PITCH_HORIZON_ECD * ECD_ANGLE_COEF_DJI) // pitch水平时电机的角度,0-360
+#define NAV_LINEAR_REF_PER_MPS \
+    (360.0f * REDUCTION_RATIO_WHEEL * 1000.0f / (2.0f * PI * RADIUS_WHEEL))
+#define NAV_ANGULAR_REF_PER_RADPS \
+    (NAV_LINEAR_REF_PER_MPS * TRACK_WIDTH / 2000.0f)
 
 
 #ifdef ONE_BOARD
@@ -31,7 +34,6 @@ static Subscriber_t *Referee_data_sub; // 底盘反馈信息订阅者
 static Chassis_Ctrl_Cmd_s chassis_cmd_send;      // 发送给底盘应用的信息,包括控制信息和UI绘制相关
 static Chassis_Upload_Data_s chassis_fetch_data; // 从底盘应用接收的反馈信息信息,底盘功率枪口热量与底盘运动状态等
 
-static RC_ctrl_t *rc_data;              // 遥控器数据,初始化时返回
 static Vision_Recv_s *vision_recv_data; // 视觉接收数据指针,初始化时返回
 static Vision_Send_s vision_send_data;  // 视觉发送数据
 
@@ -42,7 +44,9 @@ static Shoot_Ctrl_Cmd_s shoot_cmd_send;      // 传递给发射的控制信息
 static Shoot_Upload_Data_s shoot_fetch_data; // 从发射获取的反馈信息
 static buf_t *buffer_yaw, *buffer_pitch, *buffer_delay_yaw;
 static Robot_Status_e robot_state; // 机器人整体工作状态
+#if CHASSIS_USE_INS
 static INS_t INS_CMD;
+#endif
 
 static uint8_t flag = 1;
 static float aligned_total_yaw, aligned_total_pitch, delayed_total_yaw, fitter_vision_recv_data_yaw;
@@ -61,8 +65,8 @@ void syncWithVisionSystem()
 
 void RobotCMDInit()
 {
-    rc_data = RemoteControlInit(&huart5); // 修改为对应串口,注意如果是自研板dbus协议串口需选用添加了反相器的那个
     vision_recv_data = VisionInit(&huart10, syncWithVisionSystem); // 视觉通信串口
+    VisionSetNavigationMode(1U);
     // Referee_ToVision_data=RefereeInit(&huart1);  不需要在chassic的UI初始化中嵌套的有
     buffer_yaw = BUFRegister();
     buffer_pitch = BUFRegister();
@@ -78,30 +82,20 @@ void RobotCMDInit()
 
 
 /**
- * @brief 控制输入为遥控器(调试时)的模式和控制量设置
+ * @brief 使用上位机速度指令设置导航控制量
  *
  */
-static void RemoteControlSet()
+static void NavigationControlSet()
 {
-    // 控制底盘和云台运行模式,云台待添加,云台是否始终使用IMU数据?
-        // 导航逻辑代码
-    
-    if(rc_data[TEMP].rc.sd==2)
-    {
-        chassis_cmd_send.v = vision_recv_data->v * 56000; // 水平方向
-        chassis_cmd_send.w = vision_recv_data->w * 12800; // 竖直方向
-    }
-    else
-    {
-        chassis_cmd_send.w = +140.0f * (float)rc_data[TEMP].rc.rocker_l_; // _水平方向
-        chassis_cmd_send.v = +140.0f * (float)rc_data[TEMP].rc.rocker_l1; // 1数值方向
-    }
+    chassis_cmd_send.v = vision_recv_data->v * NAV_LINEAR_REF_PER_MPS;
+    chassis_cmd_send.w = vision_recv_data->w * NAV_ANGULAR_REF_PER_RADPS;
 
+#if CHASSIS_USE_INS
     INS_GetAttitude(&INS_CMD.Yaw, &INS_CMD.Pitch, &INS_CMD.Roll);
-    // 修复完成：INS可用 + 裁判数据语法正确
     VisionSetAltitude(INS_CMD.Yaw,
                       INS_CMD.Pitch,
-                      INS_CMD.Roll); 
+                      INS_CMD.Roll);
+#endif
     // 云台参数,确定云台控制数据
 
 }
@@ -111,9 +105,9 @@ static void RemoteControlSet()
 void RobotCMDTask()
 {
     // 从其他应用获取回传数据
+    VisionProcess();
 
-    // 根据遥控器左侧开关,确定当前使用的控制模式为遥控器调试还是键鼠
-    RemoteControlSet();
+    NavigationControlSet();
 
 #ifdef ONE_BOARD
     PubPushMessage(chassis_cmd_pub, (void *)&chassis_cmd_send);

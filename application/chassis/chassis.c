@@ -4,16 +4,17 @@
 #include "super_cap.h"
 #include "message_center.h"
 #include "referee_task.h"
-#include "ins_task.h"
 #include "general_def.h"
 #include "bsp_dwt.h"
 #include "referee_UI.h"
 #include "arm_math.h"
 #include "buzzer.h"
 #include "power_meter.h"
+#include "bmi088_diag.h"
+#include <limits.h>
+#include <math.h>
 
 /* 根据robot_def.h中的macro自动计算的参数 */
-#define HALF_WHEEL_BASE (WHEEL_BASE / 2.0f)     // 半轴距
 #define HALF_TRACK_WIDTH (TRACK_WIDTH / 2.0f)   // 半轮距
 #define PERIMETER_WHEEL (RADIUS_WHEEL * 2 * PI) // 轮子周长
 
@@ -41,15 +42,246 @@ static PIDInstance chassis_follow_to_yaw_pid;
 static BuzzzerInstance *buzzerc;
 static Subscriber_t *gimbal_feed_sub;          // 云台反馈信息订阅者
 static Gimbal_Upload_Data_s gimbal_fetch_data; // 从云台获取的反馈信息
-static attitude_t *chassis_IMU_data;
 float v_debug=4000.0;
 
 #define CHASSIS_MOTOR_LEFT_ID 1u
 #define CHASSIS_MOTOR_RIGHT_ID 2u
+#define DJI_ENCODER_COUNTS_PER_REV 8192.0f
+#define CHASSIS_STRAIGHT_W_EPSILON 5.0f
+#define CHASSIS_MOTION_REF_EPSILON 50.0f
+#define CHASSIS_SYNC_GAIN_PER_S 1.2f
+#define CHASSIS_SYNC_MAX_RATIO 0.06f
+#define CHASSIS_SYNC_MAX_REF 500.0f
+#define CHASSIS_STILL_SPEED_EPSILON 20.0f
+#define CHASSIS_IMU_MAX_AGE_MS 80U
+
+static uint8_t straight_tracking;
+static int8_t straight_direction;
+static int32_t straight_start_left;
+static int32_t straight_start_right;
+static uint8_t chassis_motors_stopped = 1U;
+#if CHASSIS_USE_BMI088_YAW_HOLD
+static uint8_t heading_tracking;
+static int8_t heading_direction;
+static float heading_ref_deg;
+static float heading_i_term;
+static float heading_last_error;
+static float heading_last_correction;
+static uint32_t heading_last_ms;
+#endif
+
+static int32_t ChassisMotorCount(const DJIMotorInstance *motor, int32_t direction)
+{
+    int64_t count = ((int64_t)motor->measure.total_round * 8192LL +
+                     (int64_t)motor->measure.ecd) * direction;
+    uint32_t wrapped = (uint32_t)count;
+
+    if (wrapped <= (uint32_t)INT32_MAX)
+        return (int32_t)wrapped;
+    return (int32_t)((int64_t)wrapped - 4294967296LL);
+}
+
+static int32_t ChassisCountDelta(int32_t current, int32_t start)
+{
+    uint32_t difference = (uint32_t)current - (uint32_t)start;
+
+    if (difference <= (uint32_t)INT32_MAX)
+        return (int32_t)difference;
+    return (int32_t)((int64_t)difference - 4294967296LL);
+}
+
+static float ChassisClamp(float value, float limit)
+{
+    if (value > limit)
+        return limit;
+    if (value < -limit)
+        return -limit;
+    return value;
+}
+
+static float ChassisWrapDeg(float angle)
+{
+    while (angle > 180.0f)
+        angle -= 360.0f;
+    while (angle < -180.0f)
+        angle += 360.0f;
+    return angle;
+}
+
+static void ChassisReadWheelCounts(int32_t *left, int32_t *right)
+{
+    uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+    *left = ChassisMotorCount(motor_l, -1);
+    *right = ChassisMotorCount(motor_r, 1);
+    if (primask == 0U)
+        __enable_irq();
+}
+
+static void ChassisResetSpeedPid(PIDInstance *pid)
+{
+    pid->Measure = 0.0f;
+    pid->Last_Measure = 0.0f;
+    pid->Err = 0.0f;
+    pid->Last_Err = 0.0f;
+    pid->Last_ITerm = 0.0f;
+    pid->Pout = 0.0f;
+    pid->Iout = 0.0f;
+    pid->Dout = 0.0f;
+    pid->ITerm = 0.0f;
+    pid->Output = 0.0f;
+    pid->Last_Output = 0.0f;
+    pid->Last_Dout = 0.0f;
+    pid->Ref = 0.0f;
+    pid->ERRORHandler.ERRORCount = 0U;
+    pid->ERRORHandler.ERRORType = PID_ERROR_NONE;
+}
+
+static void ChassisResetWheelSpeedPids(void)
+{
+    uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+    ChassisResetSpeedPid(&motor_l->motor_controller.speed_PID);
+    ChassisResetSpeedPid(&motor_r->motor_controller.speed_PID);
+    if (primask == 0U)
+        __enable_irq();
+}
+
+static void ChassisResetStraightControl(void)
+{
+    straight_tracking = 0U;
+    straight_direction = 0;
+#if CHASSIS_USE_BMI088_YAW_HOLD
+    heading_tracking = 0U;
+    heading_direction = 0;
+    heading_i_term = 0.0f;
+    heading_last_error = 0.0f;
+    heading_last_correction = 0.0f;
+    heading_last_ms = 0U;
+#endif
+}
+
+#if CHASSIS_USE_BMI088_YAW_HOLD
+static float ChassisApplyHeadingAssist(float base_v, float base_w)
+{
+    int8_t direction;
+    BMI088DiagState imu;
+    float yaw_error;
+    float correction;
+    float correction_limit;
+    float i_limit;
+    float dt;
+    uint32_t now;
+
+    if (fabsf(base_v) < CHASSIS_MOTION_REF_EPSILON ||
+        fabsf(base_w) > CHASSIS_STRAIGHT_W_EPSILON ||
+        !BMI088DiagGetState(&imu) ||
+        !(imu.status & BMI088_DIAG_YAW_VALID) ||
+        HAL_GetTick() - imu.last_update_ms > CHASSIS_IMU_MAX_AGE_MS)
+    {
+        heading_tracking = 0U;
+        heading_direction = 0;
+        heading_i_term = 0.0f;
+        heading_last_error = 0.0f;
+        heading_last_correction = 0.0f;
+        heading_last_ms = 0U;
+        return base_w;
+    }
+
+    direction = base_v > 0.0f ? 1 : -1;
+    if (!heading_tracking || direction != heading_direction)
+    {
+        heading_ref_deg = imu.yaw_deg;
+        heading_direction = direction;
+        heading_tracking = 1U;
+        heading_i_term = 0.0f;
+        heading_last_error = 0.0f;
+        heading_last_correction = 0.0f;
+        heading_last_ms = HAL_GetTick();
+        return base_w;
+    }
+
+    yaw_error = ChassisWrapDeg(heading_ref_deg - imu.yaw_deg);
+    if (fabsf(yaw_error) < CHASSIS_YAW_HOLD_DEADBAND)
+        yaw_error = 0.0f;
+    heading_last_error = yaw_error;
+
+    correction_limit = fabsf(base_v) * CHASSIS_YAW_HOLD_MAX_RATIO;
+    if (correction_limit > CHASSIS_YAW_HOLD_MAX_REF)
+        correction_limit = CHASSIS_YAW_HOLD_MAX_REF;
+    i_limit = fabsf(base_v) * CHASSIS_YAW_HOLD_I_MAX_RATIO;
+    if (i_limit > CHASSIS_YAW_HOLD_I_MAX_REF)
+        i_limit = CHASSIS_YAW_HOLD_I_MAX_REF;
+
+    now = HAL_GetTick();
+    dt = (float)(now - heading_last_ms) * 0.001f;
+    heading_last_ms = now;
+    if (dt <= 0.0f || dt > 0.1f || !isfinite(dt))
+        dt = 0.01f;
+
+    heading_i_term += yaw_error * CHASSIS_YAW_HOLD_KI * dt;
+    heading_i_term = ChassisClamp(heading_i_term, i_limit);
+
+    correction = CHASSIS_YAW_HOLD_DIR *
+                 (CHASSIS_YAW_HOLD_KP * yaw_error +
+                  heading_i_term -
+                  CHASSIS_YAW_HOLD_KD * imu.gyro_z_lpf_dps);
+    correction = ChassisClamp(correction, correction_limit);
+    heading_last_correction = correction;
+
+    return base_w + correction;
+}
+#endif
+
+static void ChassisApplyStraightSync(float base_v, float base_w,
+                                     float *left_ref, float *right_ref)
+{
+    int32_t left_count;
+    int32_t right_count;
+    int8_t direction;
+    int32_t left_delta;
+    int32_t right_delta;
+    int64_t phase_error_count;
+    float correction;
+    float correction_limit;
+
+    if (fabsf(base_v) < CHASSIS_MOTION_REF_EPSILON ||
+        fabsf(base_w) > CHASSIS_STRAIGHT_W_EPSILON)
+    {
+        ChassisResetStraightControl();
+        return;
+    }
+
+    direction = base_v > 0.0f ? 1 : -1;
+    ChassisReadWheelCounts(&left_count, &right_count);
+    if (!straight_tracking || direction != straight_direction)
+    {
+        straight_start_left = left_count;
+        straight_start_right = right_count;
+        straight_direction = direction;
+        straight_tracking = 1U;
+        return;
+    }
+
+    left_delta = ChassisCountDelta(left_count, straight_start_left);
+    right_delta = ChassisCountDelta(right_count, straight_start_right);
+    phase_error_count = (int64_t)right_delta - (int64_t)left_delta;
+    correction = (float)phase_error_count *
+        (360.0f / DJI_ENCODER_COUNTS_PER_REV) * CHASSIS_SYNC_GAIN_PER_S;
+
+    correction_limit = fabsf(base_v) * CHASSIS_SYNC_MAX_RATIO;
+    if (correction_limit > CHASSIS_SYNC_MAX_REF)
+        correction_limit = CHASSIS_SYNC_MAX_REF;
+    correction = ChassisClamp(correction, correction_limit);
+
+    *left_ref += correction;
+    *right_ref -= correction;
+}
 
 void ChassisInit()
 {
-    chassis_IMU_data = INS_Init();
     // 四个轮子的参数一样,改tx_id和反转标志位即可
     Motor_Init_Config_s chassis_motor_config = {
         .can_init_config = {
@@ -102,6 +334,9 @@ void ChassisInit()
     chassis_motor_config.controller_setting_init_config.motor_reverse_flag = MOTOR_DIRECTION_NORMAL;
     motor_r = DJIMotorInit(&chassis_motor_config);
 
+    ChassisResetStraightControl();
+    chassis_motors_stopped = 1U;
+
     Buzzer_config_s buzzer = {
         .alarm_level = ALARM_LEVEL_HIGH,
         .loudness = 0,
@@ -118,23 +353,93 @@ void ChassisInit()
 /* 机器人底盘控制核心任务 */
 void ChassisTask()
 {
+    float left_ref;
+    float right_ref;
+    float w_ref;
+    uint8_t should_stop;
+    uint8_t imu_stationary;
+
     // 后续增加没收到消息的处理(双板的情况)
     // 获取新的控制信息
 #ifdef ONE_BOARD
     SubGetMessage(chassis_sub, &chassis_cmd_recv);
 #endif
 
-    if(fabsf(chassis_cmd_recv.v)<50&&fabsf(chassis_cmd_recv.w)<50)
+    should_stop = fabsf(chassis_cmd_recv.v) < CHASSIS_MOTION_REF_EPSILON &&
+                  fabsf(chassis_cmd_recv.w) < CHASSIS_MOTION_REF_EPSILON;
+    imu_stationary = should_stop &&
+                     fabsf(motor_l->measure.speed_aps) < CHASSIS_STILL_SPEED_EPSILON &&
+                     fabsf(motor_r->measure.speed_aps) < CHASSIS_STILL_SPEED_EPSILON;
+#if CHASSIS_USE_BMI088_YAW_HOLD
+    BMI088DiagUpdate(imu_stationary);
+#endif
+
+    if (should_stop)
     {
+        if (!chassis_motors_stopped)
+            ChassisResetWheelSpeedPids();
+        chassis_motors_stopped = 1U;
+        ChassisResetStraightControl();
         DJIMotorStop(motor_l);
         DJIMotorStop(motor_r);
     }
     else
     {
+        if (chassis_motors_stopped)
+            ChassisResetWheelSpeedPids();
+        chassis_motors_stopped = 0U;
         DJIMotorEnable(motor_l);
         DJIMotorEnable(motor_r);
     }
 
-    DJIMotorSetRef(motor_l,chassis_cmd_recv.v-chassis_cmd_recv.w);
-    DJIMotorSetRef(motor_r,chassis_cmd_recv.v+chassis_cmd_recv.w);
+    w_ref = chassis_cmd_recv.w;
+#if CHASSIS_USE_BMI088_YAW_HOLD
+    if (!should_stop)
+        w_ref = ChassisApplyHeadingAssist(chassis_cmd_recv.v, chassis_cmd_recv.w);
+#endif
+
+    left_ref = chassis_cmd_recv.v - w_ref;
+    right_ref = chassis_cmd_recv.v + w_ref;
+    if (!should_stop)
+    {
+        ChassisApplyStraightSync(chassis_cmd_recv.v, chassis_cmd_recv.w,
+                                 &left_ref, &right_ref);
+    }
+
+    DJIMotorSetRef(motor_l, left_ref);
+    DJIMotorSetRef(motor_r, right_ref);
+}
+
+void ChassisGetHostFeedback(Chassis_Host_Feedback_s *feedback)
+{
+    const float degps_to_mps = PERIMETER_WHEEL /
+        (1000.0f * 360.0f * REDUCTION_RATIO_WHEEL);
+    uint32_t primask;
+
+    if (feedback == NULL)
+        return;
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    feedback->left_total_count = ChassisMotorCount(motor_l, -1);
+    feedback->right_total_count = ChassisMotorCount(motor_r, 1);
+    feedback->target_left_mps = motor_l->motor_controller.pid_ref * degps_to_mps;
+    feedback->target_right_mps = motor_r->motor_controller.pid_ref * degps_to_mps;
+    feedback->measured_left_mps = -motor_l->measure.speed_aps * degps_to_mps;
+    feedback->measured_right_mps = motor_r->measure.speed_aps * degps_to_mps;
+    feedback->left_output = (int16_t)-motor_l->set_value;
+    feedback->right_output = motor_r->set_value;
+#if CHASSIS_USE_BMI088_YAW_HOLD
+    feedback->heading_active = heading_tracking;
+    feedback->heading_ref_deg = heading_ref_deg;
+    feedback->heading_error_deg = heading_last_error;
+    feedback->heading_correction_ref = heading_last_correction;
+#else
+    feedback->heading_active = 0U;
+    feedback->heading_ref_deg = 0.0f;
+    feedback->heading_error_deg = 0.0f;
+    feedback->heading_correction_ref = 0.0f;
+#endif
+    if (primask == 0U)
+        __enable_irq();
 }

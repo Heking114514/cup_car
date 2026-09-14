@@ -1,0 +1,9 @@
+IMU frames: 2400; valid gyro frames: 2400
+Encoder delta: L=0, R=-2 counts
+Duration: 120.0 s; rate: 20.0 Hz; IMU timing gaps: 0
+Calibration: 1200 frames / 60.0 s, Z bias=+0.28198 deg/s
+Holdout: 1200 frames / 60.0 s, corrected Z mean=+0.00916 deg/s, std=0.60987 deg/s
+Holdout corrected yaw=+0.565 deg; peak magnitude=1.212 deg
+Temperature unavailable (temp-valid flag never set).
+Correction is host-side only; the MCU still sends raw gyro and does not use yaw for control.
+Stationary drift/noise only; absolute angle accuracy needs a known-angle test.

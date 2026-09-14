@@ -109,7 +109,9 @@ typedef struct
 // 初始化接口，返回接收数据结构体指针
 Vision_Recv_s *VisionInit(UART_HandleTypeDef *_handle, void (*application_callback)(void));
 Nav_Recv_s *NavInit(UART_HandleTypeDef *_handle);
+void VisionProcess(void);
 void VisionSend(void);
+void VisionSetNavigationMode(uint8_t enabled);
 void VisionSetAltitude(float yaw, float pitch, float roll);
 void VisionRefree_SetAltitude(float battery, float life, float color, float bullet, float game_mode);
 void Vision_Refree_Send(void);

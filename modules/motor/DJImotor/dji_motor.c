@@ -343,7 +343,11 @@ void DJIMotorControl()
 
         // 若该电机处于停止状态,直接将buff置零
         if (motor->stop_flag == MOTOR_STOP)
+        {
+            set = 0;
             memset(sender_assignment[group].tx_buff + 2 * num, 0, 2u);
+        }
+        motor->set_value = set;
     }
 
     // 遍历flag,检查是否要发送这一帧报文

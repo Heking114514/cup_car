@@ -17,7 +17,7 @@ uint8_t *USBInit(USB_Init_Config_s usb_conf)
 }
 
 /* USB 数据发送函数 */
-void USBTransmit(uint8_t *buffer, uint16_t len)
+uint8_t USBTransmit(const uint8_t *buffer, uint16_t len)
 {
-    CDC_Transmit_FS(buffer, len); // 发送
+    return CDC_Transmit_FS((uint8_t *)buffer, len);
 }

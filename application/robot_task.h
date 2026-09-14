@@ -7,6 +7,7 @@
 #include "cmsis_os.h"
 
 #include "robot.h"
+#include "robot_def.h"
 #include "ins_task.h"
 #include "motor_task.h"
 #include "referee_task.h"
@@ -35,8 +36,10 @@ void StartUITASK(void const *argument);
  */
 void OSTaskInit()
 {
+#if CHASSIS_USE_INS
     osThreadDef(instask, StartINSTASK, osPriorityAboveNormal, 0, 1024);
     insTaskHandle = osThreadCreate(osThread(instask), NULL); // 由于是阻塞读取传感器,为姿态解算设置较高优先级,确保以1khz的频率执行
+#endif
     // // 后续修改为读取传感器数据准备好的中断处理,
 
     osThreadDef(motortask, StartMOTORTASK, osPriorityNormal, 0, 256);

@@ -74,6 +74,27 @@ typedef struct
  */
 void INS_GetAttitude(float *yaw, float *pitch, float *roll);
 
+/**
+ * @brief 获取连续 yaw 角，单位 deg。
+ */
+float INS_GetYawTotalAngle(void);
+
+/**
+ * @brief 获取 Z 轴角速度，单位 deg/s。
+ */
+float INS_GetGyroZDegps(void);
+
+/**
+ * @brief 获取运行期维护的 Z 轴零偏，单位 deg/s。
+ */
+float INS_GetGyroZBiasDegps(void);
+
+/**
+ * @brief 给 INS 提供静止提示，用于停车时缓慢维护 Z 轴零偏。
+ * @param stationary 1 表示整车静止，0 表示运动中
+ */
+void INS_SetStationaryHint(uint8_t stationary);
+
 
 /* 用于修正安装误差的参数 */
 typedef struct

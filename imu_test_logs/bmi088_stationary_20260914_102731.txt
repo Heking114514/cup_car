@@ -1,0 +1,7 @@
+IMU frames: 2400; valid gyro frames: 2400
+Encoder delta: L=0, R=2 counts
+Duration: 120.0 s; rate: 20.0 Hz
+Gyro Z raw: mean=+0.28697 deg/s, std=0.61395 deg/s
+First window=+0.26855 deg/s; last window=+0.27435 deg/s; difference=+0.00580 deg/s
+Raw integrated yaw=+34.431 deg; after subtracting first-window bias=+2.218 deg
+Stationary drift/noise only; absolute angle accuracy needs a known-angle test.

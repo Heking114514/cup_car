@@ -34,8 +34,16 @@ const float zb[3] = {0, 0, 1};
 static uint32_t INS_DWT_Count = 0;
 static float dt = 0, t = 0;
 static float RefTemp = 40; // 恒温设定温度
+static float gyro_runtime_bias[3] = {0.0f, 0.0f, 0.0f};
+static uint8_t ins_stationary_hint = 0U;
+
+#define INS_GYRO_LPF_ALPHA 0.18f
+#define INS_Z_BIAS_ALPHA 0.0006f
+#define INS_STILL_GYRO_NORM_MAX 0.035f
+#define INS_STILL_ACCEL_ERR_MAX 0.35f
 
 static void IMU_Param_Correction(IMU_Param_t *param, float gyro[3], float accel[3]);
+static void INS_UpdateRuntimeBias(float gyro[3], const float accel[3]);
 
 static void IMUPWMSet(uint16_t pwm)
 {
@@ -140,6 +148,7 @@ void INS_Task(void)
 
         // demo function,用于修正安装误差,可以不管,本demo暂时没用
         IMU_Param_Correction(&IMU_Param, INS.Gyro, INS.Accel);
+        INS_UpdateRuntimeBias(INS.Gyro, INS.Accel);
 
         // 计算重力加速度矢量和b系的XY两轴的夹角,可用作功能扩展,本demo暂时没用
         // INS.atanxz = -atan2f(INS.Accel[X], INS.Accel[Z]) * 180 / PI;
@@ -191,6 +200,63 @@ void INS_GetAttitude(float *yaw, float *pitch, float *roll)
     if (yaw) *yaw = INS.Yaw;
     if (pitch) *pitch = INS.Pitch;
     if (roll) *roll = INS.Roll;
+}
+
+float INS_GetYawTotalAngle(void)
+{
+    return INS.YawTotalAngle;
+}
+
+float INS_GetGyroZDegps(void)
+{
+    return INS.Gyro[Z] * 57.295779513f;
+}
+
+float INS_GetGyroZBiasDegps(void)
+{
+    return gyro_runtime_bias[Z] * 57.295779513f;
+}
+
+void INS_SetStationaryHint(uint8_t stationary)
+{
+    ins_stationary_hint = stationary ? 1U : 0U;
+}
+
+static void INS_UpdateRuntimeBias(float gyro[3], const float accel[3])
+{
+    static float gyro_lpf[3] = {0.0f, 0.0f, 0.0f};
+    static uint8_t lpf_init = 0U;
+    float raw_gyro[3];
+    float gyro_norm;
+    float accel_norm;
+
+    memcpy(raw_gyro, gyro, sizeof(raw_gyro));
+    if (!lpf_init)
+    {
+        memcpy(gyro_lpf, raw_gyro, sizeof(gyro_lpf));
+        lpf_init = 1U;
+    }
+
+    for (uint8_t i = 0; i < 3; ++i)
+        gyro_lpf[i] += INS_GYRO_LPF_ALPHA * (raw_gyro[i] - gyro_lpf[i]);
+
+    gyro_norm = sqrtf(raw_gyro[X] * raw_gyro[X] +
+                      raw_gyro[Y] * raw_gyro[Y] +
+                      raw_gyro[Z] * raw_gyro[Z]);
+    accel_norm = sqrtf(accel[X] * accel[X] +
+                       accel[Y] * accel[Y] +
+                       accel[Z] * accel[Z]);
+
+    if (ins_stationary_hint &&
+        gyro_norm < INS_STILL_GYRO_NORM_MAX &&
+        fabsf(accel_norm - 9.81f) < INS_STILL_ACCEL_ERR_MAX)
+    {
+        gyro_runtime_bias[Z] += INS_Z_BIAS_ALPHA * (gyro_lpf[Z] - gyro_runtime_bias[Z]);
+    }
+
+    gyro[X] = gyro_lpf[X] - gyro_runtime_bias[X];
+    gyro[Y] = gyro_lpf[Y] - gyro_runtime_bias[Y];
+    gyro[Z] = gyro_lpf[Z] - gyro_runtime_bias[Z];
 }
 
 /**

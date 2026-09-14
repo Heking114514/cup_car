@@ -121,6 +121,7 @@ modules/bluetooth/HC05.c \
 modules/BMI088/bmi088.c \
 modules/imu/BMI088driver.c \
 modules/imu/BMI088Middleware.c \
+modules/imu/bmi088_diag.c \
 modules/imu/ins_task.c \
 modules/master_machine/master_process.c \
 modules/master_machine/seasky_protocol.c \
