@@ -1,6 +1,7 @@
 #include "bmi088_diag.h"
 
 #include "BMI088reg.h"
+#include "bsp_dwt.h"
 #include "main.h"
 #include "spi.h"
 #include <math.h>
@@ -9,15 +10,21 @@
 #define BMI088_DIAG_SPI_TIMEOUT_MS 10U
 #define BMI088_DIAG_RETRY_MS 1000U
 #define BMI088_DIAG_SETTLE_MS 30U
-#define BMI088_GYRO_DPS_PER_COUNT (500.0f / 32768.0f)
+#define BMI088_GYRO_RANGE_SETTING BMI088_GYRO_250
+#define BMI088_GYRO_BANDWIDTH_SETTING BMI088_GYRO_200_23_HZ
+#define BMI088_GYRO_FULL_SCALE_DPS 250.0f
+#define BMI088_GYRO_DPS_PER_COUNT (BMI088_GYRO_FULL_SCALE_DPS / 32768.0f)
+#define BMI088_GYRO_ROS_Z_SIGN 1.0f
+#define BMI088_SAMPLE_TIMEOUT_S 0.030f
 #define BMI088_STARTUP_BIAS_SAMPLES 600U
+#define BMI088_STARTUP_RESET_MISSES 20U
 #define BMI088_STARTUP_MAX_STD_DPS 0.90f
 #define BMI088_STARTUP_MAX_MEAN_DPS 3.0f
 #define BMI088_STILL_MIN_SAMPLES 50U
 #define BMI088_STILL_MAX_STD_DPS 0.90f
 #define BMI088_STILL_MAX_CORRECTED_DPS 1.2f
 #define BMI088_ONLINE_BIAS_ALPHA 0.0030f
-#define BMI088_GYRO_LPF_ALPHA 0.35f
+#define BMI088_GYRO_LPF_ALPHA 0.45f
 #define BMI088_GYRO_SATURATION_COUNT 32000
 
 static uint8_t initialized;
@@ -26,29 +33,24 @@ static uint32_t last_attempt_ms;
 static uint32_t initialized_ms;
 static BMI088DiagState diag_state;
 static uint8_t yaw_initialized;
-static uint32_t last_update_ms;
 static float startup_sum;
 static float startup_sum_sq;
 static uint16_t startup_count;
+static uint16_t startup_nonstationary_count;
 static float still_sum;
 static float still_sum_sq;
 static uint16_t still_count;
 static uint8_t gyro_lpf_initialized;
-
-static float BMI088DiagWrapDeg(float angle)
-{
-    while (angle > 180.0f)
-        angle -= 360.0f;
-    while (angle < -180.0f)
-        angle += 360.0f;
-    return angle;
-}
+static uint64_t last_update_us;
+static float last_corrected_gyro_z_dps;
+static uint8_t corrected_gyro_initialized;
 
 static void BMI088DiagResetStartupBias(void)
 {
     startup_sum = 0.0f;
     startup_sum_sq = 0.0f;
     startup_count = 0U;
+    startup_nonstationary_count = 0U;
     diag_state.startup_samples = 0U;
 }
 
@@ -156,9 +158,9 @@ static uint8_t BMI088DiagInit(void)
         return 0U;
 
     if (!BMI088DiagConfigureGyro(BMI088_GYRO_LPM1, BMI088_GYRO_NORMAL_MODE) ||
-        !BMI088DiagConfigureGyro(BMI088_GYRO_RANGE, BMI088_GYRO_500) ||
+        !BMI088DiagConfigureGyro(BMI088_GYRO_RANGE, BMI088_GYRO_RANGE_SETTING) ||
         !BMI088DiagConfigureGyro(BMI088_GYRO_BANDWIDTH,
-                                BMI088_GYRO_200_64_HZ |
+                                BMI088_GYRO_BANDWIDTH_SETTING |
                                  BMI088_GYRO_BANDWIDTH_MUST_Set))
         return 0U;
 
@@ -169,6 +171,8 @@ static uint8_t BMI088DiagInit(void)
 
     initialized_ms = HAL_GetTick();
     gyro_lpf_initialized = 0U;
+    last_update_us = 0ULL;
+    corrected_gyro_initialized = 0U;
     return 1U;
 }
 
@@ -212,6 +216,7 @@ void BMI088DiagRead(BMI088DiagSample *sample)
                            ((uint16_t)gyro_bytes[3] << 8));
     sample->gz = (int16_t)((uint16_t)gyro_bytes[4] |
                            ((uint16_t)gyro_bytes[5] << 8));
+    sample->sample_time_ms = HAL_GetTick();
     sample->status |= BMI088_DIAG_GYRO_VALID;
 
     if (BMI088DiagAccelRead(BMI088_TEMP_M, temperature_bytes,
@@ -236,9 +241,15 @@ static void BMI088DiagUpdateStartupBias(float gyro_z_dps, uint8_t stationary)
         return;
     if (!stationary)
     {
-        BMI088DiagResetStartupBias();
+        if (startup_count == 0U)
+            return;
+        if (startup_nonstationary_count < UINT16_MAX)
+            startup_nonstationary_count++;
+        if (startup_nonstationary_count >= BMI088_STARTUP_RESET_MISSES)
+            BMI088DiagResetStartupBias();
         return;
     }
+    startup_nonstationary_count = 0U;
 
     startup_sum += gyro_z_dps;
     startup_sum_sq += gyro_z_dps * gyro_z_dps;
@@ -258,6 +269,7 @@ static void BMI088DiagUpdateStartupBias(float gyro_z_dps, uint8_t stationary)
         diag_state.status |= BMI088_DIAG_BIAS_VALID | BMI088_DIAG_YAW_VALID;
         yaw_initialized = 1U;
         diag_state.yaw_deg = 0.0f;
+        corrected_gyro_initialized = 0U;
         BMI088DiagResetStillBias();
     }
     else
@@ -302,16 +314,18 @@ static void BMI088DiagUpdateOnlineBias(float gyro_z_dps)
 void BMI088DiagUpdate(uint8_t stationary)
 {
     BMI088DiagSample sample;
-    uint32_t now;
+    uint64_t now_us;
     float gyro_z_dps;
     float gyro_z_est_dps;
+    float corrected_gyro_z_dps;
     float dt;
 
     BMI088DiagRead(&sample);
     if (!(sample.status & BMI088_DIAG_GYRO_VALID))
         return;
 
-    gyro_z_dps = (float)sample.gz * BMI088_GYRO_DPS_PER_COUNT;
+    gyro_z_dps =
+        BMI088_GYRO_ROS_Z_SIGN * (float)sample.gz * BMI088_GYRO_DPS_PER_COUNT;
     if (!gyro_lpf_initialized)
     {
         diag_state.gyro_z_lpf_dps = gyro_z_dps;
@@ -324,7 +338,10 @@ void BMI088DiagUpdate(uint8_t stationary)
             (gyro_z_dps - diag_state.gyro_z_lpf_dps);
     }
     gyro_z_est_dps = diag_state.gyro_z_lpf_dps;
-    diag_state.gyro_z_dps = gyro_z_dps;
+    diag_state.gyro_z_dps = gyro_z_est_dps;
+    diag_state.sample_time_ms = sample.sample_time_ms;
+    diag_state.last_update_ms = sample.sample_time_ms;
+    diag_state.sample_sequence++;
     diag_state.status = sample.status |
         (diag_state.status & (BMI088_DIAG_YAW_VALID | BMI088_DIAG_BIAS_VALID));
     if (stationary)
@@ -333,19 +350,23 @@ void BMI088DiagUpdate(uint8_t stationary)
         sample.gz < -BMI088_GYRO_SATURATION_COUNT)
         diag_state.status |= BMI088_DIAG_SATURATED;
 
-    now = HAL_GetTick();
-    diag_state.last_update_ms = now;
-    if (last_update_ms == 0U)
+    now_us = DWT_GetTimeline_us();
+    if (last_update_us == 0ULL)
     {
-        last_update_ms = now;
+        last_update_us = now_us;
         BMI088DiagUpdateStartupBias(gyro_z_est_dps, stationary);
         return;
     }
 
-    dt = (float)(now - last_update_ms) * 0.001f;
-    last_update_ms = now;
+    dt = (float)(now_us - last_update_us) * 0.000001f;
+    last_update_us = now_us;
+    if (dt > BMI088_SAMPLE_TIMEOUT_S)
+        diag_state.status |= BMI088_DIAG_SAMPLE_TIMEOUT;
     if (dt <= 0.0f || dt > 0.2f || !isfinite(dt))
+    {
         dt = 0.0f;
+        corrected_gyro_initialized = 0U;
+    }
 
     BMI088DiagUpdateStartupBias(gyro_z_est_dps, stationary);
     if (!(diag_state.status & BMI088_DIAG_BIAS_VALID))
@@ -356,13 +377,20 @@ void BMI088DiagUpdate(uint8_t stationary)
     else
         BMI088DiagResetStillBias();
 
+    corrected_gyro_z_dps = gyro_z_est_dps - diag_state.gyro_z_bias_dps;
+    if (!corrected_gyro_initialized)
+    {
+        last_corrected_gyro_z_dps = corrected_gyro_z_dps;
+        corrected_gyro_initialized = 1U;
+    }
+
     if (yaw_initialized && dt > 0.0f)
     {
-        diag_state.yaw_deg = BMI088DiagWrapDeg(
-            diag_state.yaw_deg +
-            (gyro_z_est_dps - diag_state.gyro_z_bias_dps) * dt);
+        diag_state.yaw_deg +=
+            0.5f * (last_corrected_gyro_z_dps + corrected_gyro_z_dps) * dt;
         diag_state.status |= BMI088_DIAG_YAW_VALID;
     }
+    last_corrected_gyro_z_dps = corrected_gyro_z_dps;
 }
 
 uint8_t BMI088DiagGetState(BMI088DiagState *state)
@@ -375,7 +403,8 @@ uint8_t BMI088DiagGetState(BMI088DiagState *state)
 
 void BMI088DiagResetYaw(float yaw_deg)
 {
-    diag_state.yaw_deg = BMI088DiagWrapDeg(yaw_deg);
+    diag_state.yaw_deg = isfinite(yaw_deg) ? yaw_deg : 0.0f;
+    corrected_gyro_initialized = 0U;
     if (diag_state.status & BMI088_DIAG_BIAS_VALID)
     {
         yaw_initialized = 1U;

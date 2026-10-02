@@ -12,7 +12,7 @@ from pathlib import Path
 import serial
 
 
-GYRO_DEG_PER_S_PER_COUNT = 500.0 / 32768.0
+GYRO_DEG_PER_S_PER_COUNT = 250.0 / 32768.0
 FIELDS = ("host_elapsed_s", "mcu_time_ms", "sequence", "status", "gx", "gy", "gz",
           "temp_cC", "gz_corrected_deg_s", "yaw_corrected_deg")
 
@@ -65,7 +65,7 @@ def analyze(samples: list[dict[str, float]], encoder_first: tuple[int, int] | No
         results.append(f"Temperature: {min(temperatures):.2f} to {max(temperatures):.2f} C")
     else:
         results.append("Temperature unavailable (temp-valid flag never set).")
-    results.append("Correction is host-side only; the MCU still sends raw gyro and does not use yaw for control.")
+    results.append("Correction is host-side only; MCU yaw control depends on the flashed firmware mode.")
     results.append("Stationary drift/noise only; absolute angle accuracy needs a known-angle test.")
     return results
 

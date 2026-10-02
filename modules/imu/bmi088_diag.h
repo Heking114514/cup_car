@@ -9,9 +9,11 @@
 #define BMI088_DIAG_BIAS_VALID 0x08U
 #define BMI088_DIAG_STATIONARY 0x10U
 #define BMI088_DIAG_SATURATED  0x20U
+#define BMI088_DIAG_SAMPLE_TIMEOUT 0x40U
 
 typedef struct
 {
+    uint32_t sample_time_ms;
     uint8_t status;
     int16_t gx;
     int16_t gy;
@@ -27,10 +29,14 @@ typedef struct
     float gyro_z_lpf_dps;
     float gyro_z_bias_dps;
     uint16_t startup_samples;
+    uint32_t sample_sequence;
+    uint32_t sample_time_ms;
     uint32_t last_update_ms;
 } BMI088DiagState;
 
-/* Raw gyro counts at +/-500 dps; each count is about 0.015259 dps. */
+/* Raw gyro counts at +/-250 dps; each count is about 0.007629 dps.
+ * Positive yaw follows ROS base_link +Z: counterclockwise viewed from above.
+ */
 void BMI088DiagRead(BMI088DiagSample *sample);
 void BMI088DiagUpdate(uint8_t stationary);
 uint8_t BMI088DiagGetState(BMI088DiagState *state);

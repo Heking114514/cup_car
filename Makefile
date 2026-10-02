@@ -145,7 +145,9 @@ modules/message_center/message_center.c \
 modules/daemon/daemon.c \
 modules/buffer/buffer.c \
 modules/alarm/buzzer.c \
-modules/power_meter/power_meter.c\
+modules/power_meter/power_meter.c \
+modules/rfid/rfid_reader.c \
+modules/voice/voice_tts.c \
 application/gimbal/gimbal.c \
 application/chassis/chassis.c \
 application/shoot/shoot.c \
@@ -265,6 +267,8 @@ C_INCLUDES =  \
 -Imodules/alarm \
 -Imodules/buffer \
 -Imodules/power_meter \
+-Imodules/rfid \
+-Imodules/voice \
 -Imodules \
 -IMiddlewares/ST/ARM/DSP/Inc \
 -IMiddlewares/ST/ARM/DSP/Include/dsp \

@@ -98,16 +98,19 @@ void VisionSetNavigationMode(uint8_t enabled)
 #include "bmi088_diag.h"
 #endif
 #include "chassis.h"
+#include "rfid_reader.h"
+#include "voice_tts.h"
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-#define HOST_COMMAND_LINE_MAX        48U
+#define HOST_COMMAND_LINE_MAX        96U
 #define HOST_RX_BUFFER_SIZE         256U
 #define HOST_COMMAND_TIMEOUT_MS     500U
-#define HOST_ENCODER_REPORT_MS       50U
+#define HOST_ENCODER_REPORT_MS       20U
 #define HOST_CONTROL_REPORT_MS      100U
+#define HOST_IMU_SAMPLE_TIMEOUT_MS   40U
 #define HOST_MAX_VX_MPS               2.0f
 #define HOST_MAX_AZ_RADPS             10.0f
 #define HOST_MILLI_LIMIT         2147483.0f
@@ -128,6 +131,7 @@ static uint32_t host_last_encoder_report_ms;
 static uint32_t host_last_control_report_ms;
 static float host_last_vx_mps;
 static float host_last_az_radps;
+static uint32_t host_att_sequence;
 
 static void HostInvalidateCommand(void)
 {
@@ -195,6 +199,28 @@ static void HostParseVelocity(void)
     host_command_valid = 1U;
     if (vision_application_callback)
         vision_application_callback();
+}
+
+static uint8_t HostParseTTS(void)
+{
+    const char prefix[] = "TTS,";
+    uint16_t prefix_len = (uint16_t)(sizeof(prefix) - 1U);
+
+    if (host_command_length <= prefix_len ||
+        memcmp(host_command_line, prefix, prefix_len) != 0)
+        return 0U;
+
+    VoiceTTSSpeakGBK((const uint8_t *)&host_command_line[prefix_len],
+                     (uint16_t)(host_command_length - prefix_len));
+    return 1U;
+}
+
+static void HostParseCommand(void)
+{
+    if (HostParseTTS())
+        return;
+
+    HostParseVelocity();
 }
 
 static uint8_t HostReadByte(uint8_t *byte)
@@ -276,6 +302,7 @@ Vision_Recv_s *VisionInit(UART_HandleTypeDef *_handle, void (*application_callba
     host_command_seen = 0U;
     host_last_vx_mps = 0.0f;
     host_last_az_radps = 0.0f;
+    host_att_sequence = 0U;
     HostInvalidateCommand();
     host_last_command_ms = HAL_GetTick();
     host_last_encoder_report_ms = host_last_command_ms;
@@ -313,7 +340,7 @@ void VisionProcess(void)
             if (host_command_length > 0U)
             {
                 host_command_line[host_command_length] = '\0';
-                HostParseVelocity();
+                HostParseCommand();
             }
             host_command_length = 0U;
         }
@@ -374,13 +401,13 @@ static int HostAppendControl(char *buffer, size_t capacity, uint32_t now,
         (int)chassis->right_output);
 }
 
-static int HostAppendAttitude(char *buffer, size_t capacity, uint32_t now,
-                              uint32_t sequence)
+static int HostAppendAttitude(char *buffer, size_t capacity, uint32_t send_time_ms)
 {
+    uint32_t sequence = host_att_sequence++;
 #if CHASSIS_USE_INS
     return snprintf(buffer, capacity,
                     "ATT,%lu,%lu,%u,%ld,%ld,%ld,%u\r\n",
-                    (unsigned long)now,
+                    (unsigned long)send_time_ms,
                     (unsigned long)sequence,
                     0x01U,
                     (long)HostToMilli(INS_GetYawTotalAngle()),
@@ -389,13 +416,18 @@ static int HostAppendAttitude(char *buffer, size_t capacity, uint32_t now,
                     0U);
 #else
     BMI088DiagState imu_state;
+    uint8_t status;
 
     BMI088DiagGetState(&imu_state);
+    status = imu_state.status;
+    if (imu_state.sample_time_ms == 0U ||
+        send_time_ms - imu_state.sample_time_ms > HOST_IMU_SAMPLE_TIMEOUT_MS)
+        status |= BMI088_DIAG_SAMPLE_TIMEOUT;
     return snprintf(buffer, capacity,
                     "ATT,%lu,%lu,%u,%ld,%ld,%ld,%u\r\n",
-                    (unsigned long)now,
+                    (unsigned long)imu_state.sample_time_ms,
                     (unsigned long)sequence,
-                    (unsigned int)imu_state.status,
+                    (unsigned int)status,
                     (long)HostToMilli(imu_state.yaw_deg),
                     (long)HostToMilli(imu_state.gyro_z_dps),
                     (long)HostToMilli(imu_state.gyro_z_bias_dps),
@@ -417,9 +449,45 @@ static int HostAppendHeadingHold(char *buffer, size_t capacity, uint32_t now,
                     (long)HostToMilli(chassis->heading_correction_ref));
 }
 
+static void HostFormatRFIDUid(const RFID_State_s *rfid, char *uid_hex, size_t capacity)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t pos = 0U;
+
+    if (capacity == 0U)
+        return;
+
+    for (uint8_t i = 0U; i < rfid->uid_size && pos + 2U < capacity; i++)
+    {
+        uid_hex[pos++] = hex[(rfid->uid[i] >> 4) & 0x0FU];
+        uid_hex[pos++] = hex[rfid->uid[i] & 0x0FU];
+    }
+    uid_hex[pos] = '\0';
+}
+
+static int HostAppendRFID(char *buffer, size_t capacity, uint32_t now,
+                          uint32_t sequence)
+{
+    RFID_State_s rfid;
+    char uid_hex[RFID_UID_MAX_SIZE * 2U + 1U];
+
+    RFIDGetState(&rfid);
+    HostFormatRFIDUid(&rfid, uid_hex, sizeof(uid_hex));
+
+    return snprintf(buffer, capacity,
+                    "RFID,%lu,%lu,%u,%u,%u,%u,%s\r\n",
+                    (unsigned long)now,
+                    (unsigned long)sequence,
+                    (unsigned int)rfid.status,
+                    (unsigned int)rfid.protocol_status,
+                    (unsigned int)rfid.tag_type,
+                    (unsigned int)rfid.sak,
+                    uid_hex);
+}
+
 void VisionSend(void)
 {
-    char send_buffer[384];
+    char send_buffer[512];
     Chassis_Host_Feedback_s chassis;
 #if !CHASSIS_USE_INS
     BMI088DiagSample imu;
@@ -453,7 +521,7 @@ void VisionSend(void)
         BMI088DiagRead(&imu);
         appended = snprintf(send_buffer + length, sizeof(send_buffer) - (size_t)length,
                             "IMU,%lu,%lu,%u,%d,%d,%d,%d\r\n",
-                            (unsigned long)now, (unsigned long)sequence,
+                            (unsigned long)imu.sample_time_ms, (unsigned long)sequence,
                             (unsigned int)imu.status, (int)imu.gx, (int)imu.gy,
                             (int)imu.gz, (int)imu.temperature_cC);
 #endif
@@ -463,7 +531,7 @@ void VisionSend(void)
 
         appended = HostAppendAttitude(send_buffer + length,
                                       sizeof(send_buffer) - (size_t)length,
-                                      now, sequence);
+                                      now);
         if (appended <= 0 || appended >= (int)(sizeof(send_buffer) - (size_t)length))
             return;
         length += appended;
@@ -480,6 +548,13 @@ void VisionSend(void)
         appended = HostAppendControl(send_buffer + length,
                                      sizeof(send_buffer) - (size_t)length,
                                      now, sequence, &chassis);
+        if (appended <= 0 || appended >= (int)(sizeof(send_buffer) - (size_t)length))
+            return;
+        length += appended;
+
+        appended = HostAppendRFID(send_buffer + length,
+                                  sizeof(send_buffer) - (size_t)length,
+                                  now, sequence);
         if (appended <= 0 || appended >= (int)(sizeof(send_buffer) - (size_t)length))
             return;
         length += appended;

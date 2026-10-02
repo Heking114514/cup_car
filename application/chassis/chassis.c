@@ -70,6 +70,12 @@ static float heading_last_correction;
 static uint32_t heading_last_ms;
 #endif
 
+static uint8_t ChassisMotorsStill(void)
+{
+    return fabsf(motor_l->measure.speed_aps) < CHASSIS_STILL_SPEED_EPSILON &&
+           fabsf(motor_r->measure.speed_aps) < CHASSIS_STILL_SPEED_EPSILON;
+}
+
 static int32_t ChassisMotorCount(const DJIMotorInstance *motor, int32_t direction)
 {
     int64_t count = ((int64_t)motor->measure.total_round * 8192LL +
@@ -319,7 +325,12 @@ void ChassisInit()
         .controller_setting_init_config = {
             .angle_feedback_source = MOTOR_FEED, .speed_feedback_source = MOTOR_FEED,
             .outer_loop_type = SPEED_LOOP,
-            .close_loop_type = SPEED_LOOP | CURRENT_LOOP,
+            /* DJI C610/M2006 accepts a current command directly over CAN.
+             * Keeping the generic software current loop here halves the usable
+             * startup torque with the current PID below, so the speed loop is
+             * the chassis actuator loop.
+             */
+            .close_loop_type = SPEED_LOOP,
             .motor_reverse_flag = MOTOR_DIRECTION_NORMAL, // 注意方向设置为拨盘的拨出的击发方向
         },
         .motor_type = M2006
@@ -357,7 +368,6 @@ void ChassisTask()
     float right_ref;
     float w_ref;
     uint8_t should_stop;
-    uint8_t imu_stationary;
 
     // 后续增加没收到消息的处理(双板的情况)
     // 获取新的控制信息
@@ -367,11 +377,21 @@ void ChassisTask()
 
     should_stop = fabsf(chassis_cmd_recv.v) < CHASSIS_MOTION_REF_EPSILON &&
                   fabsf(chassis_cmd_recv.w) < CHASSIS_MOTION_REF_EPSILON;
-    imu_stationary = should_stop &&
-                     fabsf(motor_l->measure.speed_aps) < CHASSIS_STILL_SPEED_EPSILON &&
-                     fabsf(motor_r->measure.speed_aps) < CHASSIS_STILL_SPEED_EPSILON;
 #if CHASSIS_USE_BMI088_YAW_HOLD
-    BMI088DiagUpdate(imu_stationary);
+    {
+        BMI088DiagState imu_state;
+        uint8_t bias_ready;
+        uint8_t imu_stationary;
+
+        BMI088DiagGetState(&imu_state);
+        bias_ready = (imu_state.status & BMI088_DIAG_BIAS_VALID) != 0U;
+        /* Startup bias calibration should not be blocked by encoder speed
+         * noise while the host command is zero.  After bias is ready, keep the
+         * stricter wheel-still gate for online bias tracking.
+         */
+        imu_stationary = should_stop && (!bias_ready || ChassisMotorsStill());
+        BMI088DiagUpdate(imu_stationary);
+    }
 #endif
 
     if (should_stop)

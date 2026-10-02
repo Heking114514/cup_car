@@ -2,6 +2,9 @@
 #include "robot.h"
 #include "robot_def.h"
 #include "robot_task.h"
+#include "rfid_reader.h"
+#include "usart.h"
+#include "voice_tts.h"
 
 // 编译warning,提醒开发者修改机器人参数
 #ifndef ROBOT_DEF_PARAM_WARNING
@@ -32,6 +35,9 @@ void RobotInit()
     RobotCMDInit();
 #endif
 
+    RFIDInit(&huart10);
+    VoiceTTSInit(&huart7);
+
 #if defined(ONE_BOARD) || defined(CHASSIS_BOARD)
     ChassisInit();
     
@@ -46,6 +52,8 @@ void RobotInit()
 void RobotTask()
 {
 #if defined(ONE_BOARD) || defined(GIMBAL_BOARD)
+    RFIDTask();
+    VoiceTTSTask();
     RobotCMDTask();
 #endif
 
