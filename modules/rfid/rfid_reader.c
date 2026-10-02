@@ -8,19 +8,28 @@
 #define RFID_DEVICE_ADDR          0x0000U
 #define RFID_CMD_GET_VERSION      0x0000U
 #define RFID_CMD_FIND_TYPE_A      0x1000U
+#define RFID_CMD_AUTHEN_CLASS     0x1001U
+#define RFID_CMD_READ_CLASS       0x1002U
 #define RFID_CMD_BEEP             0xFF00U
 #define RFID_FIND_IDLE_MODE       0x26U
+#define RFID_AUTH_KEY_A           0x60U
+#define RFID_TARGET_SECTOR        0U
+#define RFID_TARGET_BLOCK         1U
+#define RFID_TARGET_BYTE          0U
+#define RFID_BLOCK_SIZE           16U
 
 #define RFID_RX_BUFFER_SIZE       96U
 #define RFID_TX_BUFFER_SIZE       32U
-#define RFID_RESPONSE_TIMEOUT_MS  80U
+#define RFID_RESPONSE_TIMEOUT_MS  400U
 #define RFID_POLL_INTERVAL_MS     100U
 
 typedef enum
 {
     RFID_INIT_VERSION = 0,
     RFID_INIT_BEEP,
-    RFID_RUNNING,
+    RFID_FIND_CARD,
+    RFID_AUTH_CARD,
+    RFID_READ_NUMBER,
 } RFID_InitStage_e;
 
 typedef struct
@@ -44,6 +53,9 @@ static uint32_t rfid_last_poll_ms;
 static uint8_t rfid_rx_frame[RFID_RX_BUFFER_SIZE];
 static volatile uint16_t rfid_rx_len;
 static volatile uint8_t rfid_rx_ready;
+static const uint8_t rfid_default_key[6] = {
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+};
 
 static uint16_t RFIDFrameTotalLength(const uint8_t *frame)
 {
@@ -163,8 +175,10 @@ static uint8_t RFIDUidChanged(const uint8_t *uid, uint8_t uid_size)
 static void RFIDClearCard(uint8_t protocol_status)
 {
     rfid_state.protocol_status = protocol_status;
-    rfid_state.status &= (uint8_t)~RFID_STATUS_CARD_PRESENT;
+    rfid_state.status &= (uint8_t)~(RFID_STATUS_CARD_PRESENT |
+                                    RFID_STATUS_NUMBER_VALID);
     rfid_state.uid_size = 0U;
+    rfid_state.number = 0U;
     rfid_state.tag_type = 0U;
     rfid_state.sak = 0U;
     rfid_state.update_time_ms = HAL_GetTick();
@@ -173,10 +187,12 @@ static void RFIDClearCard(uint8_t protocol_status)
 static void RFIDHandleFindCard(const RFID_Response_s *response)
 {
     uint8_t uid_size;
+    uint8_t uid_changed;
 
     if (response->status != 0U || response->data_len < 3U)
     {
         RFIDClearCard(response->status);
+        rfid_init_stage = RFID_FIND_CARD;
         return;
     }
 
@@ -185,12 +201,18 @@ static void RFIDHandleFindCard(const RFID_Response_s *response)
     {
         rfid_state.status |= RFID_STATUS_PROTOCOL_ERROR;
         RFIDClearCard(response->status);
+        rfid_init_stage = RFID_FIND_CARD;
         return;
     }
 
-    if (!(rfid_state.status & RFID_STATUS_CARD_PRESENT) ||
-        RFIDUidChanged(&response->data[3], uid_size))
+    uid_changed = (uint8_t)(!(rfid_state.status & RFID_STATUS_CARD_PRESENT) ||
+                            RFIDUidChanged(&response->data[3], uid_size));
+    if (uid_changed)
+    {
         rfid_state.card_sequence++;
+        rfid_state.status &= (uint8_t)~RFID_STATUS_NUMBER_VALID;
+        rfid_state.number = 0U;
+    }
 
     rfid_state.protocol_status = response->status;
     rfid_state.tag_type = ((uint16_t)response->data[0] << 8) | response->data[1];
@@ -200,6 +222,91 @@ static void RFIDHandleFindCard(const RFID_Response_s *response)
     rfid_state.status |= RFID_STATUS_CARD_PRESENT;
     rfid_state.status &= (uint8_t)~RFID_STATUS_TIMEOUT;
     rfid_state.update_time_ms = HAL_GetTick();
+    if (uid_changed || !(rfid_state.status & RFID_STATUS_NUMBER_VALID))
+        rfid_init_stage = RFID_AUTH_CARD;
+    else
+        rfid_init_stage = RFID_FIND_CARD;
+}
+
+static void RFIDHandleAuth(const RFID_Response_s *response)
+{
+    if (response->status == 0U)
+    {
+        rfid_init_stage = RFID_READ_NUMBER;
+        return;
+    }
+
+    rfid_state.status |= RFID_STATUS_PROTOCOL_ERROR;
+    rfid_state.status &= (uint8_t)~RFID_STATUS_NUMBER_VALID;
+    rfid_state.number = 0U;
+    rfid_init_stage = RFID_FIND_CARD;
+}
+
+static uint8_t RFIDDecodeNumber(uint8_t raw_value, uint8_t *number)
+{
+    if (number == NULL)
+        return 0U;
+
+    if (raw_value >= 1U && raw_value <= 12U)
+    {
+        *number = raw_value;
+        return 1U;
+    }
+
+    if (raw_value >= (uint8_t)'1' && raw_value <= (uint8_t)'9')
+    {
+        *number = (uint8_t)(raw_value - (uint8_t)'0');
+        return 1U;
+    }
+
+    if (raw_value == (uint8_t)'A' || raw_value == (uint8_t)'a')
+    {
+        *number = 10U;
+        return 1U;
+    }
+
+    if (raw_value == (uint8_t)'B' || raw_value == (uint8_t)'b')
+    {
+        *number = 11U;
+        return 1U;
+    }
+
+    if (raw_value == (uint8_t)'C' || raw_value == (uint8_t)'c')
+    {
+        *number = 12U;
+        return 1U;
+    }
+
+    return 0U;
+}
+
+static void RFIDHandleReadNumber(const RFID_Response_s *response)
+{
+    uint8_t number;
+
+    if (response->status != 0U || response->data_len != RFID_BLOCK_SIZE)
+    {
+        rfid_state.status |= RFID_STATUS_PROTOCOL_ERROR;
+        rfid_state.status &= (uint8_t)~RFID_STATUS_NUMBER_VALID;
+        rfid_state.number = 0U;
+        rfid_init_stage = RFID_FIND_CARD;
+        return;
+    }
+
+    if (RFIDDecodeNumber(response->data[RFID_TARGET_BYTE], &number))
+    {
+        rfid_state.number = number;
+        rfid_state.status |= RFID_STATUS_NUMBER_VALID;
+    }
+    else
+    {
+        rfid_state.number = 0U;
+        rfid_state.status &= (uint8_t)~RFID_STATUS_NUMBER_VALID;
+        rfid_state.status |= RFID_STATUS_PROTOCOL_ERROR;
+    }
+
+    rfid_state.update_time_ms = HAL_GetTick();
+    rfid_init_stage = RFID_FIND_CARD;
 }
 
 static void RFIDHandleVersion(const RFID_Response_s *response)
@@ -239,10 +346,16 @@ static void RFIDHandleResponse(const RFID_Response_s *response)
         rfid_init_stage = RFID_INIT_BEEP;
         break;
     case RFID_CMD_BEEP:
-        rfid_init_stage = RFID_RUNNING;
+        rfid_init_stage = RFID_FIND_CARD;
         break;
     case RFID_CMD_FIND_TYPE_A:
         RFIDHandleFindCard(response);
+        break;
+    case RFID_CMD_AUTHEN_CLASS:
+        RFIDHandleAuth(response);
+        break;
+    case RFID_CMD_READ_CLASS:
+        RFIDHandleReadNumber(response);
         break;
     default:
         break;
@@ -312,6 +425,8 @@ void RFIDTask(void)
     uint32_t now = HAL_GetTick();
     uint8_t find_mode = RFID_FIND_IDLE_MODE;
     uint8_t beep_time = 10U;
+    uint8_t read_block = RFID_TARGET_BLOCK;
+    uint8_t auth_payload[8];
 
     if (rfid_usart == NULL)
         return;
@@ -332,7 +447,19 @@ void RFIDTask(void)
         if (RFIDSendCommand(RFID_CMD_BEEP, &beep_time, 1U))
             rfid_last_poll_ms = now;
         break;
-    case RFID_RUNNING:
+    case RFID_AUTH_CARD:
+        auth_payload[0] = RFID_AUTH_KEY_A;
+        auth_payload[1] = RFID_TARGET_SECTOR;
+        memcpy(&auth_payload[2], rfid_default_key, sizeof(rfid_default_key));
+        if (RFIDSendCommand(RFID_CMD_AUTHEN_CLASS, auth_payload,
+                            (uint16_t)sizeof(auth_payload)))
+            rfid_last_poll_ms = now;
+        break;
+    case RFID_READ_NUMBER:
+        if (RFIDSendCommand(RFID_CMD_READ_CLASS, &read_block, 1U))
+            rfid_last_poll_ms = now;
+        break;
+    case RFID_FIND_CARD:
     default:
         if (RFIDSendCommand(RFID_CMD_FIND_TYPE_A, &find_mode, 1U))
             rfid_last_poll_ms = now;

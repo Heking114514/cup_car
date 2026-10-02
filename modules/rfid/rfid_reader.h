@@ -11,6 +11,7 @@
 #define RFID_STATUS_TIMEOUT        0x04U
 #define RFID_STATUS_PROTOCOL_ERROR 0x08U
 #define RFID_STATUS_READER_ONLINE  0x10U
+#define RFID_STATUS_NUMBER_VALID   0x20U
 
 typedef struct
 {
@@ -21,6 +22,7 @@ typedef struct
     uint16_t tag_type;
     uint8_t sak;
     uint8_t uid_size;
+    uint8_t number;
     uint8_t uid[RFID_UID_MAX_SIZE];
     char version[32];
 } RFID_State_s;
