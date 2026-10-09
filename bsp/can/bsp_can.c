@@ -10,6 +10,50 @@
 // @todo: 后续为每个CAN总线单独添加一个can_instance指针数组,提高回调查找的性能
 static CANInstance *can_instance[CAN_MX_REGISTER_CNT] = {NULL};
 static uint8_t idx; // 全局CAN实例索引,每次有新的模块注册会自增
+typedef struct
+{
+    volatile uint32_t tx_success_count;
+    volatile uint32_t tx_failure_count;
+    volatile uint32_t last_tx_failure_ms;
+} CAN_Transmit_Statistic_s;
+static CAN_Transmit_Statistic_s can_tx_statistics[DEVICE_CAN_CNT];
+
+#ifdef FDCAN
+static int8_t CANPeripheralIndex(FDCAN_HandleTypeDef *can_handle)
+{
+    if (can_handle == &hfdcan1)
+        return 0;
+    if (can_handle == &hfdcan2)
+        return 1;
+    if (can_handle == &hfdcan3)
+        return 2;
+    return -1;
+}
+#else
+static int8_t CANPeripheralIndex(CAN_HandleTypeDef *can_handle)
+{
+    if (can_handle == &hcan1)
+        return 0;
+    if (can_handle == &hcan2)
+        return 1;
+    return -1;
+}
+#endif
+
+static void CANRecordTransmitResult(CANInstance *instance, uint8_t success)
+{
+    int8_t index = CANPeripheralIndex(instance->can_handle);
+
+    if (index < 0)
+        return;
+    if (success)
+        can_tx_statistics[index].tx_success_count++;
+    else
+    {
+        can_tx_statistics[index].tx_failure_count++;
+        can_tx_statistics[index].last_tx_failure_ms = HAL_GetTick();
+    }
+}
 
 /* ----------------two static function called by CANRegister()-------------------- */
 
@@ -223,6 +267,7 @@ uint8_t CANTransmit(CANInstance *_instance, float timeout)
         {
             LOGWARNING("[bsp_can] CAN MAILbox full! failed to add msg to mailbox. Cnt [%d]", busy_count);
             busy_count++;
+            CANRecordTransmitResult(_instance, 0U);
             return 0;
         }
     }
@@ -237,9 +282,63 @@ uint8_t CANTransmit(CANInstance *_instance, float timeout)
     {
         LOGWARNING("[bsp_can] CAN bus BUSY! cnt:%d", busy_count);
         busy_count++;
+        CANRecordTransmitResult(_instance, 0U);
         return 0;
     }
+    CANRecordTransmitResult(_instance, 1U);
     return 1; // 发送成功
+}
+
+#ifdef FDCAN
+void CANGetDiagnostic(FDCAN_HandleTypeDef *can_handle,
+                      CAN_Diagnostic_s *diagnostic)
+#else
+void CANGetDiagnostic(CAN_HandleTypeDef *can_handle,
+                      CAN_Diagnostic_s *diagnostic)
+#endif
+{
+    int8_t index;
+    uint32_t failure_count;
+    uint32_t last_failure_ms;
+
+    if (diagnostic == NULL)
+        return;
+    memset(diagnostic, 0, sizeof(*diagnostic));
+    index = CANPeripheralIndex(can_handle);
+    if (index < 0)
+        return;
+
+    diagnostic->tx_success_count = can_tx_statistics[index].tx_success_count;
+    failure_count = can_tx_statistics[index].tx_failure_count;
+    last_failure_ms = can_tx_statistics[index].last_tx_failure_ms;
+    diagnostic->tx_failure_count = failure_count;
+    diagnostic->last_tx_failure_age_ms = failure_count != 0U
+        ? HAL_GetTick() - last_failure_ms
+        : UINT32_MAX;
+
+#ifdef FDCAN
+    {
+        FDCAN_ProtocolStatusTypeDef protocol_status = {0};
+
+        diagnostic->state = (uint8_t)HAL_FDCAN_GetState(can_handle);
+        diagnostic->hal_error_code = HAL_FDCAN_GetError(can_handle);
+        diagnostic->tx_fifo_free_level =
+            (uint8_t)HAL_FDCAN_GetTxFifoFreeLevel(can_handle);
+        if (HAL_FDCAN_GetProtocolStatus(can_handle, &protocol_status) == HAL_OK)
+        {
+            diagnostic->protocol_last_error_code =
+                protocol_status.LastErrorCode;
+            diagnostic->bus_off = (uint8_t)protocol_status.BusOff;
+            diagnostic->error_passive =
+                (uint8_t)protocol_status.ErrorPassive;
+        }
+    }
+#else
+    diagnostic->state = (uint8_t)HAL_CAN_GetState(can_handle);
+    diagnostic->hal_error_code = HAL_CAN_GetError(can_handle);
+    diagnostic->tx_fifo_free_level =
+        (uint8_t)HAL_CAN_GetTxMailboxesFreeLevel(can_handle);
+#endif
 }
 
 void CANSetDLC(CANInstance *_instance, uint8_t length)

@@ -18,10 +18,17 @@ BAUD_RATE = 115200
 COMMAND_PERIOD_S = 0.1
 SERIAL_TIMEOUT_S = 0.02
 STOP_COMMAND = b"0.000000,0.000000\r\n"
-ENCODER_COUNTS_PER_WHEEL_REV = 8192 * 36
+LEFT_ENCODER_COUNTS_PER_WHEEL_REV = 368867.22
+RIGHT_ENCODER_COUNTS_PER_WHEEL_REV = 368883.76666666666
 ENCODER_MAX_INTERVAL_MS = 500
 STOP_SETTLE_MS = 750
 MAX_LINEAR_SPEED_MPS = 0.40
+MAX_ANGULAR_SPEED_RADPS = 1.50
+DEFAULT_LEFT_TURN_RATE_RADPS = 0.60
+STRAIGHT_LEG_S = 10.0
+LEFT_TURN_ANGLE_DEG = 90.0
+TURN_TIMEOUT_S = 12.0
+IMU_YAW_VALID = 0x04
 
 CSV_FIELDS = (
     "host_time",
@@ -30,6 +37,8 @@ CSV_FIELDS = (
     "run_active",
     "requested_vx_mps",
     "requested_az_radps",
+    "route_phase",
+    "route_phase_elapsed_s",
     "frame_type",
     "parse_ok",
     "mcu_time_ms",
@@ -80,6 +89,10 @@ def host_timestamp() -> str:
 def signed_int32_delta(end: int, start: int) -> int:
     value = (end - start) & 0xFFFFFFFF
     return value if value <= 0x7FFFFFFF else value - 0x100000000
+
+
+def wrap_deg_delta(current_deg: float, start_deg: float) -> float:
+    return (current_deg - start_deg + 180.0) % 360.0 - 180.0
 
 
 def available_ports() -> list[tuple[str, str]]:
@@ -219,6 +232,13 @@ class StraightLineTestApp:
         self.requested_az_radps = 0.0
         self.run_start_left: int | None = None
         self.run_start_right: int | None = None
+        self.route_phase = "idle"
+        self.route_phase_start_s: float | None = None
+        self.route_after_id: str | None = None
+        self.route_vx_mps = 0.0
+        self.route_turn_rate_radps = 0.0
+        self.turn_start_yaw_deg: float | None = None
+        self.turn_target_delta_deg = 0.0
 
         self.last_encoder_raw: tuple[int, int] | None = None
         self.left_unwrapped: int | None = None
@@ -241,14 +261,15 @@ class StraightLineTestApp:
         self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=CSV_FIELDS)
         self.csv_writer.writeheader()
         self.csv_file.flush()
+        self.raw_file.write("# profile=vx 0.03/0.06/0.09 m/s, 10 s each, az 0\n")
         self.raw_file.write("host_time\tdirection\tframe\n")
         self.raw_file.flush()
-        self.text_file.write("host_time\trun_id\trun_active\tframe\n")
+        self.text_file.write("host_time\trun_id\trun_active\tprofile_stage\tframe\n")
         self.text_file.flush()
 
         self.port_var = tk.StringVar()
         self.vx_var = tk.StringVar(value="0.10")
-        self.az_var = tk.StringVar(value="0.0")
+        self.az_var = tk.StringVar(value=f"{DEFAULT_LEFT_TURN_RATE_RADPS:.2f}")
         self.connection_var = tk.StringVar(value="Disconnected")
         self.command_var = tk.StringVar(value="Command: 0.000, 0.000")
         self.encoder_var = tk.StringVar(value="ENC: --")
@@ -267,7 +288,7 @@ class StraightLineTestApp:
         self.root.after(50, self.poll_events)
 
     def build_ui(self) -> None:
-        self.root.title("Straight-line speed-loop test")
+        self.root.title("Straight-turn-straight IMU test")
         self.root.geometry("1000x690")
         self.root.minsize(820, 590)
 
@@ -288,15 +309,14 @@ class StraightLineTestApp:
         self.connect_button = ttk.Button(main, text="Connect", command=self.toggle_connection)
         self.connect_button.grid(row=0, column=3)
 
-        controls = ttk.LabelFrame(main, text="Velocity command", padding=10)
+        controls = ttk.LabelFrame(main, text="Route command", padding=10)
         controls.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(12, 8))
         ttk.Label(controls, text="vx (m/s)").grid(row=0, column=0, sticky="w")
         self.vx_entry = ttk.Entry(controls, textvariable=self.vx_var, width=10)
         self.vx_entry.grid(row=0, column=1, padx=(6, 20))
-        ttk.Label(controls, text="az (rad/s)").grid(row=0, column=2, sticky="w")
+        ttk.Label(controls, text="left turn az (rad/s)").grid(row=0, column=2, sticky="w")
         self.az_entry = ttk.Entry(controls, textvariable=self.az_var, width=10)
         self.az_entry.grid(row=0, column=3, padx=(6, 24))
-        self.az_entry.configure(state="disabled")
         self.start_button = ttk.Button(
             controls, text="Start", command=self.start_run, state="disabled"
         )
@@ -421,13 +441,120 @@ class StraightLineTestApp:
                 "Straight-line test", f"|vx| must not exceed {MAX_LINEAR_SPEED_MPS:.2f} m/s."
             )
             return None
-        if abs(az_radps) > 1e-6:
+        if abs(az_radps) < 1e-6:
             messagebox.showerror(
-                "Straight-line test",
-                "az must be 0 for the straight-line speed-loop test.",
+                "Straight-turn-straight test", "Set a non-zero left turn az."
+            )
+            return None
+        if az_radps < 0.0:
+            messagebox.showerror(
+                "Straight-turn-straight test", "Use a positive az for the left turn."
+            )
+            return None
+        if abs(az_radps) > MAX_ANGULAR_SPEED_RADPS:
+            messagebox.showerror(
+                "Straight-turn-straight test",
+                f"|az| must not exceed {MAX_ANGULAR_SPEED_RADPS:.2f} rad/s.",
             )
             return None
         return vx_mps, az_radps
+
+    def set_route_phase(self, phase: str, vx_mps: float, az_radps: float) -> None:
+        if self.worker is None:
+            return
+        self.route_phase = phase
+        self.route_phase_start_s = time.monotonic()
+        self.requested_vx_mps = vx_mps
+        self.requested_az_radps = az_radps
+        self.worker.set_command(vx_mps, az_radps)
+        self.command_var.set(
+            f"Run {self.run_id}: {phase} vx={vx_mps:.3f}, az={az_radps:.3f}"
+        )
+        self.write_raw(
+            host_timestamp(),
+            "EVENT",
+            f"ROUTE_PHASE,{self.run_id},{phase},{vx_mps:.6f},{az_radps:.6f}",
+        )
+
+    def schedule_route_step(self, delay_ms: int) -> None:
+        if self.route_after_id is not None:
+            try:
+                self.root.after_cancel(self.route_after_id)
+            except tk.TclError:
+                pass
+        self.route_after_id = self.root.after(delay_ms, self.route_step)
+
+    def cancel_route_timer(self) -> None:
+        if self.route_after_id is None:
+            return
+        try:
+            self.root.after_cancel(self.route_after_id)
+        except tk.TclError:
+            pass
+        self.route_after_id = None
+
+    def route_step(self) -> None:
+        self.route_after_id = None
+        if not self.run_active or self.stop_pending or self.worker is None:
+            return
+
+        now_s = time.monotonic()
+        phase_elapsed_s = (
+            now_s - self.route_phase_start_s
+            if self.route_phase_start_s is not None
+            else 0.0
+        )
+
+        if self.route_phase == "straight_1":
+            self.turn_start_yaw_deg = None
+            self.turn_target_delta_deg = LEFT_TURN_ANGLE_DEG
+            self.set_route_phase("turn_left", 0.0, self.route_turn_rate_radps)
+            self.schedule_route_step(100)
+            return
+
+        if self.route_phase == "turn_left":
+            yaw_valid = (
+                self.last_att is not None and (self.last_att[2] & IMU_YAW_VALID) != 0
+            )
+            if yaw_valid:
+                yaw_deg = self.last_att[3] / 1000.0
+                if self.turn_start_yaw_deg is None:
+                    self.turn_start_yaw_deg = yaw_deg
+                    self.write_raw(
+                        host_timestamp(),
+                        "EVENT",
+                        f"TURN_YAW_START,{self.run_id},{yaw_deg:.6f}",
+                    )
+                yaw_delta_deg = wrap_deg_delta(yaw_deg, self.turn_start_yaw_deg)
+                turn_done = (
+                    yaw_delta_deg >= self.turn_target_delta_deg
+                    if self.turn_target_delta_deg > 0.0
+                    else yaw_delta_deg <= self.turn_target_delta_deg
+                )
+                if turn_done:
+                    self.write_raw(
+                        host_timestamp(),
+                        "EVENT",
+                        f"TURN_YAW_DONE,{self.run_id},{yaw_deg:.6f},{yaw_delta_deg:.6f}",
+                    )
+                    self.set_route_phase("straight_2", self.route_vx_mps, 0.0)
+                    self.schedule_route_step(int(STRAIGHT_LEG_S * 1000.0))
+                    return
+
+            if phase_elapsed_s >= TURN_TIMEOUT_S:
+                self.write_raw(
+                    host_timestamp(),
+                    "EVENT",
+                    f"TURN_TIMEOUT,{self.run_id},{phase_elapsed_s:.3f}",
+                )
+                self.stop_run("Turn timeout")
+                return
+
+            self.schedule_route_step(100)
+            return
+
+        if self.route_phase == "straight_2":
+            self.stop_run("Route complete")
 
     def start_run(self) -> None:
         if self.worker is None or not self.connected or self.run_active:
@@ -440,20 +567,24 @@ class StraightLineTestApp:
         self.run_active = True
         self.stop_pending = False
         self.run_start_s = time.monotonic()
-        self.requested_vx_mps = vx_mps
-        self.requested_az_radps = az_radps
+        self.route_vx_mps = vx_mps
+        self.route_turn_rate_radps = az_radps
+        self.turn_start_yaw_deg = None
+        self.turn_target_delta_deg = LEFT_TURN_ANGLE_DEG
         self.run_start_left = self.left_unwrapped
         self.run_start_right = self.right_unwrapped
-        self.worker.set_command(vx_mps, az_radps)
         self.vx_entry.configure(state="disabled")
+        self.az_entry.configure(state="disabled")
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
-        self.command_var.set(f"Run {self.run_id}: vx={vx_mps:.3f}, az={az_radps:.3f}")
         self.write_raw(
-            host_timestamp(), "EVENT", f"RUN_START,{self.run_id},{vx_mps:.6f},{az_radps:.6f}"
+            host_timestamp(), "EVENT", f"RUN_START,{self.run_id},{vx_mps:.6f},{az_radps:.6f},route"
         )
+        self.set_route_phase("straight_1", vx_mps, 0.0)
+        self.schedule_route_step(int(STRAIGHT_LEG_S * 1000.0))
 
     def stop_run(self, reason: str, settle: bool = True) -> None:
+        self.cancel_route_timer()
         worker = self.worker
         if worker is not None:
             worker.set_command(0.0, 0.0)
@@ -465,6 +596,8 @@ class StraightLineTestApp:
             return
 
         self.stop_pending = True
+        self.route_phase = "stopping"
+        self.route_phase_start_s = time.monotonic()
         self.requested_vx_mps = 0.0
         self.requested_az_radps = 0.0
         self.start_button.configure(state="disabled")
@@ -503,7 +636,11 @@ class StraightLineTestApp:
         self.run_active = False
         self.stop_pending = False
         self.run_start_s = None
+        self.route_phase = "idle"
+        self.route_phase_start_s = None
+        self.turn_start_yaw_deg = None
         self.vx_entry.configure(state="normal")
+        self.az_entry.configure(state="normal")
         self.start_button.configure(state="normal" if self.connected else "disabled")
         self.stop_button.configure(state="disabled")
         self.command_var.set(f"Stopped ({reason}); transmitting 0,0")
@@ -566,18 +703,28 @@ class StraightLineTestApp:
         deltas = self.current_run_deltas()
         if self.run_active and deltas is not None:
             left_delta, right_delta, phase_error = deltas
-            phase_rev = phase_error / ENCODER_COUNTS_PER_WHEEL_REV
+            left_rev = left_delta / LEFT_ENCODER_COUNTS_PER_WHEEL_REV
+            right_rev = right_delta / RIGHT_ENCODER_COUNTS_PER_WHEEL_REV
+            phase_rev = right_rev - left_rev
+            left_distance_m = left_rev * WHEEL_CIRCUMFERENCE_M
+            right_distance_m = right_rev * WHEEL_CIRCUMFERENCE_M
+            phase_distance_m = right_distance_m - left_distance_m
             row.update(
                 {
                     "run_left_delta_count": left_delta,
                     "run_right_delta_count": right_delta,
                     "run_phase_error_count": phase_error,
+                    "run_left_wheel_rev": f"{left_rev:.9f}",
+                    "run_right_wheel_rev": f"{right_rev:.9f}",
                     "run_phase_error_wheel_rev": f"{phase_rev:.9f}",
+                    "run_left_distance_m": f"{left_distance_m:.9f}",
+                    "run_right_distance_m": f"{right_distance_m:.9f}",
+                    "run_phase_error_m": f"{phase_distance_m:.9f}",
                 }
             )
             self.phase_var.set(
-                f"Run delta: L={left_delta}  R={right_delta}  "
-                f"R-L={phase_error} count ({phase_rev:+.6f} wheel rev)"
+                f"Run: L={left_distance_m:+.4f}m  R={right_distance_m:+.4f}m  "
+                f"R-L={phase_distance_m * 1000.0:+.2f}mm ({phase_rev:+.6f} rev)"
             )
         return row
 
@@ -606,7 +753,64 @@ class StraightLineTestApp:
             f"measured={values[10]}/{values[11]} mm/s  "
             f"output={values[12]}/{values[13]}"
         )
+        if self.run_active and not self.stop_pending and (
+            values[2] != 1 or values[3] != 0 or values[4] != 1
+        ):
+            self.stop_run("Invalid CTL control state")
         return row
+
+    @staticmethod
+    def update_raw_imu(values: list[int]) -> dict[str, object]:
+        return {
+            "mcu_time_ms": values[0],
+            "sequence": values[1],
+            "raw_imu_status": values[2],
+            "raw_gyro_x_count": values[3],
+            "raw_gyro_y_count": values[4],
+            "raw_gyro_z_count": values[5],
+            "raw_temperature_cC": values[6],
+        }
+
+    def update_motor(self, values: list[int]) -> dict[str, object]:
+        self.last_mtr = values
+        row = {
+            "mcu_time_ms": values[0],
+            "sequence": values[1],
+            "drive_status": values[2],
+            "left_current": values[3],
+            "right_current": values[4],
+            "left_integral_output": values[5],
+            "right_integral_output": values[6],
+            "left_temperature_C": values[7],
+            "right_temperature_C": values[8],
+        }
+        self.motor_var.set(
+            "MTR: "
+            f"status=0x{values[2]:02X} current={values[3]}/{values[4]}  "
+            f"integral={values[5]}/{values[6]}  temp={values[7]}/{values[8]} C"
+        )
+        if self.run_active and not self.stop_pending and (values[2] & 0x0A):
+            reason = (
+                "Lower heading-divergence fault"
+                if values[2] & 0x08
+                else "Lower drive-start fault"
+            )
+            self.stop_run(reason)
+        return row
+
+    @staticmethod
+    def update_rfid(fields: list[str]) -> dict[str, object]:
+        values = [int(field, 10) for field in fields[1:8]]
+        return {
+            "mcu_time_ms": values[0],
+            "sequence": values[1],
+            "rfid_status": values[2],
+            "rfid_protocol_status": values[3],
+            "rfid_tag_type": values[4],
+            "rfid_sak": values[5],
+            "rfid_number": values[6],
+            "rfid_uid_hex": fields[8],
+        }
 
     def update_attitude(self, values: list[int]) -> dict[str, object]:
         self.last_att = values
@@ -631,6 +835,10 @@ class StraightLineTestApp:
             f"gz={gyro_z_dps:+.3f} dps bias={bias_z_dps:+.4f} dps  "
             f"cal={values[6]}"
         )
+        if self.run_active and not self.stop_pending and (
+            (values[2] & 0x0D) != 0x0D or (values[2] & 0x60) != 0
+        ):
+            self.stop_run("Invalid BMI088 attitude state")
         return row
 
     def update_heading_hold(self, values: list[int]) -> dict[str, object]:
@@ -656,16 +864,45 @@ class StraightLineTestApp:
         )
         return row
 
-    def log_telemetry(self, timestamp: str, received_s: float, line: str) -> None:
+    def update_straight_sync(self, values: list[int]) -> dict[str, object]:
+        self.last_syn = values
+        phase_error_deg = values[3] / 1000.0
+        correction_ref = values[4] / 1000.0
+        row = {
+            "mcu_time_ms": values[0],
+            "sequence": values[1],
+            "sync_active": values[2],
+            "sync_phase_error_mdeg": values[3],
+            "sync_phase_error_deg": f"{phase_error_deg:.6f}",
+            "sync_correction_milli_ref": values[4],
+            "sync_correction_ref": f"{correction_ref:.6f}",
+        }
+        self.sync_var.set(
+            "SYN: "
+            f"active={values[2]} phase={phase_error_deg:+.3f} wheel-deg  "
+            f"corr={correction_ref:+.3f}"
+        )
+        return row
+
+    def log_telemetry(
+        self, timestamp: str, received_s: float, line: str, record: bool
+    ) -> None:
         fields = [field.strip() for field in line.split(",")]
-        if not fields or fields[0] not in ("ENC", "CTL", "ATT", "HLD", "PHY", "MTR"):
+        if not fields or fields[0] not in (
+            "ENC", "IMU", "CTL", "ATT", "HLD", "SYN", "MTR", "RFID"
+        ):
             return
         frame_type = fields[0]
+        profile_elapsed_s, stage_elapsed_s = self.profile_times(received_s)
         row: dict[str, object] = {
             "host_time": timestamp,
             "host_elapsed_s": f"{received_s - self.session_start_s:.6f}",
             "run_id": self.run_id if self.run_id else "",
             "run_active": int(self.run_active),
+            "profile_stage": self.profile_stage_index + 1
+            if self.profile_stage_index >= 0 else "",
+            "profile_elapsed_s": f"{profile_elapsed_s:.6f}",
+            "stage_elapsed_s": f"{stage_elapsed_s:.6f}",
             "requested_vx_mps": f"{self.requested_vx_mps:.6f}",
             "requested_az_radps": f"{self.requested_az_radps:.6f}",
             "frame_type": frame_type,
@@ -675,16 +912,23 @@ class StraightLineTestApp:
         try:
             expected_fields_by_type = {
                 "ENC": 5,
+                "IMU": 8,
                 "CTL": 15,
                 "ATT": 8,
                 "HLD": 7,
-                "PHY": 10,
-                "MTR": 16,
+                "SYN": 6,
+                "MTR": 10,
+                "RFID": 9,
             }
             expected_fields = expected_fields_by_type[frame_type]
             if len(fields) != expected_fields:
                 raise ValueError(f"expected {expected_fields} fields, got {len(fields)}")
-            values = [int(field, 10) for field in fields[1:]]
+            if frame_type == "RFID":
+                row.update(self.update_rfid(fields))
+                values = []
+            else:
+                values = [int(field, 10) for field in fields[1:]]
+
             if frame_type == "ENC":
                 if not (
                     0 <= values[0] <= 0xFFFFFFFF
@@ -694,35 +938,28 @@ class StraightLineTestApp:
                 ):
                     raise ValueError("ENC value out of range")
                 row.update(self.update_encoder(values))
+            elif frame_type == "IMU":
+                row.update(self.update_raw_imu(values))
             elif frame_type == "CTL":
                 row.update(self.update_control(values))
             elif frame_type == "ATT":
                 row.update(self.update_attitude(values))
             elif frame_type == "HLD":
                 row.update(self.update_heading_hold(values))
-            elif frame_type == "PHY":
-                row.update(
-                    {
-                        "mcu_time_ms": values[0],
-                        "sequence": values[1],
-                    }
-                )
-            else:
-                row.update(
-                    {
-                        "mcu_time_ms": values[0],
-                        "sequence": values[1],
-                    }
-                )
-            row["run_active"] = int(self.run_active)
-            row["requested_vx_mps"] = f"{self.requested_vx_mps:.6f}"
-            row["requested_az_radps"] = f"{self.requested_az_radps:.6f}"
+            elif frame_type == "SYN":
+                row.update(self.update_straight_sync(values))
+            elif frame_type == "MTR":
+                row.update(self.update_motor(values))
             row["parse_ok"] = 1
         except ValueError as exc:
             self.append_stream(f"PARSE ERROR: {exc}: {line}")
 
+        if not record:
+            return
         self.text_file.write(
-            f"{timestamp}\t{self.run_id if self.run_id else ''}\t{int(self.run_active)}\t{line}\n"
+            f"{timestamp}\t{self.run_id if self.run_id else ''}\t"
+            f"{row['run_active']}\t{row['profile_stage']}\t"
+            f"{line}\n"
         )
         self.text_file.flush()
         self.csv_writer.writerow(row)
@@ -741,9 +978,11 @@ class StraightLineTestApp:
         self.stream_text.configure(state="disabled")
 
     def handle_line(self, timestamp: str, received_s: float, line: str) -> None:
-        self.write_raw(timestamp, "RX", line)
-        self.log_telemetry(timestamp, received_s, line)
-        if line.startswith(("ENC,", "CTL,", "ATT,", "HLD,", "MTR,", "PHY,")):
+        record = self.run_active or self.stop_pending
+        if record:
+            self.write_raw(timestamp, "RX", line)
+        self.log_telemetry(timestamp, received_s, line, record)
+        if line.startswith(("ENC,", "IMU,", "CTL,", "ATT,", "HLD,", "SYN,", "MTR,", "RFID,")):
             self.append_stream(f"{timestamp}  {line}")
         else:
             self.append_stream(line)
@@ -754,12 +993,13 @@ class StraightLineTestApp:
                 kind, value = self.events.get_nowait()
                 if kind == "connected":
                     self.connected = True
-                    self.connection_var.set(f"Connected to {value}; zero command active")
+                    self.connection_var.set(f"已连接 {value}；当前持续发送零速命令")
                     self.write_raw(host_timestamp(), "EVENT", f"CONNECTED,{value}")
                     self.set_connection_controls(connecting=True)
                 elif kind == "tx":
                     timestamp, command_text = value  # type: ignore[misc]
-                    self.write_raw(str(timestamp), "TX", str(command_text))
+                    if self.run_active or self.stop_pending or str(command_text) != "0.000000,0.000000":
+                        self.write_raw(str(timestamp), "TX", str(command_text))
                 elif kind == "line":
                     timestamp, received_s, line = value  # type: ignore[misc]
                     self.handle_line(str(timestamp), float(received_s), str(line))
@@ -775,6 +1015,10 @@ class StraightLineTestApp:
                     self.last_ctl = None
                     self.last_att = None
                     self.last_hld = None
+                    self.last_syn = None
+                    self.last_mtr = None
+                    self.sync_var.set("SYN: --")
+                    self.motor_var.set("MTR: --")
                     self.set_connection_controls(connecting=False)
                     self.connection_var.set(f"Disconnected: {error}" if error else "Disconnected")
                     self.write_raw(host_timestamp(), "EVENT", f"DISCONNECTED,{error}")

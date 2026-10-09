@@ -1,4 +1,4 @@
-
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import csv
@@ -18,9 +18,16 @@ from serial.tools import list_ports
 
 
 BAUD_RATE = 115200
-STOP_COMMAND = b"0.000,0.000\r\n"
+STOP_COMMAND = b"0.000000,0.000000\r\n"
 COMMAND_PERIOD_S = 0.1
 SERIAL_TIMEOUT_S = 0.02
+TRACK_WIDTH_M = 0.1466
+# 2026-10-06 means from five left and six right 10-turn measurements.
+LEFT_ENCODER_COUNTS_PER_WHEEL_REV = 368867.22
+RIGHT_ENCODER_COUNTS_PER_WHEEL_REV = 368883.76666666666
+DEFAULT_WHEEL_SPEED_MPS = 0.03
+MIN_WHEEL_SPEED_MPS = 0.005
+MAX_WHEEL_SPEED_MPS = 0.08
 SNAPSHOT_SAMPLES = 7
 SNAPSHOT_MAX_AGE_S = 0.5
 SNAPSHOT_MAX_WINDOW_S = 0.75
@@ -64,6 +71,8 @@ class ControllerState:
     command_az_mradps: int
     target_left_mmps: int
     target_right_mmps: int
+    measured_left_mmps: int
+    measured_right_mmps: int
     left_output: int
     right_output: int
 
@@ -127,9 +136,24 @@ class SerialWorker(threading.Thread):
         self.port = port
         self.events = events
         self.stop_event = stop_event
+        self.command_lock = threading.Lock()
+        self.command = STOP_COMMAND
+        self.command_text = "0.000000,0.000000"
+        self.command_generation = 0
 
     def emit(self, kind: str, value: object) -> None:
         self.events.put((kind, value))
+
+    def set_command(self, vx_mps: float, az_radps: float) -> None:
+        command_text = f"{vx_mps:.6f},{az_radps:.6f}"
+        with self.command_lock:
+            self.command_text = command_text
+            self.command = (command_text + "\r\n").encode("ascii")
+            self.command_generation += 1
+
+    def command_snapshot(self) -> tuple[bytes, str, int]:
+        with self.command_lock:
+            return self.command, self.command_text, self.command_generation
 
     @staticmethod
     def send_stop(device: serial.Serial, repeat: int = 1) -> None:
@@ -155,15 +179,18 @@ class SerialWorker(threading.Thread):
             device.reset_input_buffer()
             device.reset_output_buffer()
             self.send_stop(device, repeat=3)
-            self.emit("tx", "0.000,0.000 x3")
+            self.emit("tx", "0.000000,0.000000 x3")
             self.emit("connected", self.port)
+            sent_generation = -1
             next_command_s = time.monotonic()
 
             while not self.stop_event.is_set():
                 now_s = time.monotonic()
-                if now_s >= next_command_s:
-                    self.send_stop(device)
-                    self.emit("tx", "0.000,0.000")
+                command, command_text, generation = self.command_snapshot()
+                if generation != sent_generation or now_s >= next_command_s:
+                    device.write(command)
+                    self.emit("tx", command_text)
+                    sent_generation = generation
                     next_command_s = now_s + COMMAND_PERIOD_S
 
                 chunk = device.read(device.in_waiting or 1)
@@ -187,7 +214,7 @@ class SerialWorker(threading.Thread):
             if device is not None and device.is_open:
                 try:
                     self.send_stop(device, repeat=5)
-                    self.emit("tx", "0.000,0.000 x5")
+                    self.emit("tx", "0.000000,0.000000 x5")
                 except (serial.SerialException, OSError):
                     pass
                 try:
@@ -214,6 +241,9 @@ class EncoderCalibrationApp:
         self.sample_turns = 0
         self.trial_number = 0
         self.results: dict[str, list[float]] = {"left": [], "right": []}
+        self.motion_active = False
+        self.display_zero_left: int | None = None
+        self.display_zero_right: int | None = None
         self.closing = False
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
@@ -253,7 +283,7 @@ class EncoderCalibrationApp:
         )
         self.csv_file.flush()
         self.raw_file.write(
-            "# Safe encoder calibration: host transmits only 0.000,0.000\\r\\n\n"
+            "# Motorized encoder calibration; commands repeat every 100 ms.\n"
             "# ENC,time_ms,sequence,left_total_count,right_total_count\n"
             "pc_time\tdirection\tframe\n"
         )
@@ -262,10 +292,12 @@ class EncoderCalibrationApp:
         self.port_var = tk.StringVar()
         self.turns_var = tk.StringVar(value="10")
         self.wheel_var = tk.StringVar(value="left")
+        self.speed_var = tk.StringVar(value=f"{DEFAULT_WHEEL_SPEED_MPS:.3f}")
         self.status_var = tk.StringVar(value="Disconnected")
         self.left_var = tk.StringVar(value="--")
         self.right_var = tk.StringVar(value="--")
         self.telemetry_var = tk.StringVar(value="No encoder telemetry")
+        self.motion_var = tk.StringVar(value="Stopped")
         self.capture_var = tk.StringVar(value="No active capture")
         self.summary_var = tk.StringVar(value="Left: -- | Right: --")
         self.ctl_var = tk.StringVar(value="CTL: --")
@@ -276,11 +308,12 @@ class EncoderCalibrationApp:
         self.build_ui()
         self.refresh_ports()
         self.root.protocol("WM_DELETE_WINDOW", self.close_window)
+        self.root.bind("<Escape>", lambda _event: self.stop_motion("Escape key"))
         self.root.after(50, self.poll_events)
 
     def build_ui(self) -> None:
-        self.root.title("Encoder 10-turn calibration")
-        self.root.geometry("930x650")
+        self.root.title("左右轮编码器标定")
+        self.root.geometry("1040x720")
         self.root.minsize(800, 560)
 
         main = ttk.Frame(self.root, padding=12)
@@ -290,56 +323,81 @@ class EncoderCalibrationApp:
         main.columnconfigure(1, weight=1)
         main.rowconfigure(8, weight=1)
 
-        ttk.Label(main, text="Serial port").grid(row=0, column=0, sticky="w")
+        ttk.Label(main, text="串口").grid(row=0, column=0, sticky="w")
         self.port_combo = ttk.Combobox(
             main, textvariable=self.port_var, state="readonly", width=52
         )
         self.port_combo.grid(row=0, column=1, sticky="ew", padx=8)
-        self.refresh_button = ttk.Button(main, text="Refresh", command=self.refresh_ports)
+        self.refresh_button = ttk.Button(main, text="刷新", command=self.refresh_ports)
         self.refresh_button.grid(row=0, column=2, padx=(0, 8))
-        self.connect_button = ttk.Button(main, text="Connect", command=self.toggle_connection)
+        self.connect_button = ttk.Button(main, text="连接", command=self.toggle_connection)
         self.connect_button.grid(row=0, column=3)
 
         status = ttk.Frame(main)
         status.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(12, 4))
         for column in range(4):
             status.columnconfigure(column, weight=1)
-        self.make_value(status, 0, "Left total count", self.left_var)
-        self.make_value(status, 1, "Right total count", self.right_var)
-        self.make_value(status, 2, "Encoder stream", self.telemetry_var)
-        self.make_value(status, 3, "Controller", self.ctl_var)
+        self.make_value(status, 0, "左轮清零后计数", self.left_var)
+        self.make_value(status, 1, "右轮清零后计数", self.right_var)
+        self.make_value(status, 2, "编码器数据流", self.telemetry_var)
+        self.make_value(status, 3, "电机控制", self.ctl_var)
 
-        controls = ttk.LabelFrame(main, text="Manual wheel calibration", padding=10)
+        controls = ttk.LabelFrame(main, text="单轮标定", padding=10)
         controls.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(8, 6))
-        ttk.Label(controls, text="Wheel").grid(row=0, column=0, sticky="w")
+        ttk.Label(controls, text="车轮").grid(row=0, column=0, sticky="w")
         self.left_radio = ttk.Radiobutton(
-            controls, text="Left", variable=self.wheel_var, value="left"
+            controls, text="左轮", variable=self.wheel_var, value="left"
         )
         self.right_radio = ttk.Radiobutton(
-            controls, text="Right", variable=self.wheel_var, value="right"
+            controls, text="右轮", variable=self.wheel_var, value="right"
         )
         self.left_radio.grid(row=0, column=1, padx=(8, 4))
         self.right_radio.grid(row=0, column=2, padx=4)
-        ttk.Label(controls, text="Turns").grid(row=0, column=3, padx=(24, 4))
+        ttk.Label(controls, text="标定圈数").grid(row=0, column=3, padx=(24, 4))
         self.turns_entry = ttk.Entry(controls, textvariable=self.turns_var, width=6)
         self.turns_entry.grid(row=0, column=4)
         self.start_button = ttk.Button(
-            controls, text="Capture start", command=self.capture_start, state="disabled"
+            controls, text="记录起点", command=self.capture_start, state="disabled"
         )
         self.start_button.grid(row=0, column=5, padx=(24, 6))
         self.end_button = ttk.Button(
-            controls, text="Capture end and save", command=self.capture_end, state="disabled"
+            controls, text="记录终点并保存", command=self.capture_end, state="disabled"
         )
         self.end_button.grid(row=0, column=6)
         controls.columnconfigure(7, weight=1)
+
+        ttk.Label(controls, text="轮速 (m/s)").grid(
+            row=1, column=0, sticky="w", pady=(12, 0)
+        )
+        self.speed_entry = ttk.Entry(controls, textvariable=self.speed_var, width=8)
+        self.speed_entry.grid(row=1, column=1, columnspan=2, sticky="w", pady=(12, 0))
+        self.forward_button = ttk.Button(
+            controls, text="正转", command=lambda: self.start_motion(1), state="disabled"
+        )
+        self.reverse_button = ttk.Button(
+            controls, text="反转", command=lambda: self.start_motion(-1), state="disabled"
+        )
+        self.stop_button = ttk.Button(
+            controls, text="停止", command=lambda: self.stop_motion("Stop button"), state="disabled"
+        )
+        self.zero_button = ttk.Button(
+            controls, text="显示清零", command=self.zero_display, state="disabled"
+        )
+        self.forward_button.grid(row=1, column=3, padx=(24, 6), pady=(12, 0))
+        self.reverse_button.grid(row=1, column=4, padx=6, pady=(12, 0))
+        self.stop_button.grid(row=1, column=5, padx=6, pady=(12, 0))
+        self.zero_button.grid(row=1, column=6, padx=6, pady=(12, 0))
+        ttk.Label(controls, textvariable=self.motion_var).grid(
+            row=1, column=7, sticky="w", padx=(12, 0), pady=(12, 0)
+        )
         ttk.Label(controls, textvariable=self.capture_var).grid(
-            row=1, column=0, columnspan=8, sticky="w", pady=(10, 0)
+            row=2, column=0, columnspan=8, sticky="w", pady=(10, 0)
         )
 
         ttk.Label(main, textvariable=self.status_var).grid(
             row=3, column=0, columnspan=4, sticky="w", pady=(2, 6)
         )
-        ttk.Label(main, text="Trial log").grid(row=4, column=0, sticky="w")
+        ttk.Label(main, text="标定日志").grid(row=4, column=0, sticky="w")
         ttk.Entry(main, textvariable=self.log_var, state="readonly").grid(
             row=4, column=1, columnspan=3, sticky="ew", padx=(8, 0)
         )
@@ -364,7 +422,7 @@ class EncoderCalibrationApp:
             row=6, column=0, columnspan=4, sticky="w", pady=(0, 8)
         )
 
-        ttk.Label(main, text="Raw stream").grid(row=7, column=0, columnspan=4, sticky="w")
+        ttk.Label(main, text="原始串口数据").grid(row=7, column=0, columnspan=4, sticky="w")
         self.raw_text = scrolledtext.ScrolledText(
             main, height=12, wrap=tk.NONE, font=("Consolas", 9), state="disabled"
         )
@@ -411,6 +469,105 @@ class EncoderCalibrationApp:
     def selected_port(self) -> str:
         return self.port_labels.get(self.port_var.get(), "")
 
+    @staticmethod
+    def wheel_targets_to_command(left_mps: float, right_mps: float) -> tuple[float, float]:
+        vx_mps = -(left_mps + right_mps) * 0.5
+        az_radps = (left_mps - right_mps) / TRACK_WIDTH_M
+        return vx_mps, az_radps
+
+    def update_motor_controls(self) -> None:
+        can_start = self.connected and not self.motion_active
+        self.forward_button.configure(state="normal" if can_start else "disabled")
+        self.reverse_button.configure(state="normal" if can_start else "disabled")
+        self.stop_button.configure(state="normal" if self.connected else "disabled")
+        self.zero_button.configure(
+            state="normal" if self.connected and self.frames else "disabled"
+        )
+        wheel_locked = self.motion_active or self.sample_start is not None
+        self.left_radio.configure(state="disabled" if wheel_locked else "normal")
+        self.right_radio.configure(state="disabled" if wheel_locked else "normal")
+        self.speed_entry.configure(state="disabled" if self.motion_active else "normal")
+
+    def start_motion(self, direction: int) -> None:
+        worker = self.worker
+        if not self.connected or worker is None:
+            messagebox.showerror("Encoder calibration", "Connect the STM32 serial port first.")
+            return
+        try:
+            speed_mps = float(self.speed_var.get())
+        except ValueError:
+            messagebox.showerror("Encoder calibration", "Wheel speed must be a number.")
+            return
+        if not MIN_WHEEL_SPEED_MPS <= speed_mps <= MAX_WHEEL_SPEED_MPS:
+            messagebox.showerror(
+                "Encoder calibration",
+                f"Wheel speed must be {MIN_WHEEL_SPEED_MPS:.3f} to "
+                f"{MAX_WHEEL_SPEED_MPS:.3f} m/s.",
+            )
+            return
+        if direction not in (-1, 1):
+            return
+
+        signed_speed = speed_mps * direction
+        wheel = self.wheel_var.get()
+        left_mps = signed_speed if wheel == "left" else 0.0
+        right_mps = signed_speed if wheel == "right" else 0.0
+        vx_mps, az_radps = self.wheel_targets_to_command(left_mps, right_mps)
+        if self.frames:
+            self.zero_display()
+        worker.set_command(vx_mps, az_radps)
+        self.motion_active = True
+        direction_name = "forward" if direction > 0 else "reverse"
+        self.motion_var.set(f"{wheel.title()} {direction_name}: {speed_mps:.3f} m/s")
+        self.status_var.set(
+            f"Running {wheel} wheel; command vx={vx_mps:.4f}, az={az_radps:.4f}"
+        )
+        self.write_raw(
+            "EVENT",
+            f"MOTOR_START,{wheel},{direction_name},{speed_mps:.6f},{vx_mps:.6f},{az_radps:.6f}",
+        )
+        self.update_motor_controls()
+
+    def stop_motion(self, reason: str = "Stop") -> None:
+        if self.worker is not None:
+            self.worker.set_command(0.0, 0.0)
+        if self.motion_active:
+            self.write_raw("EVENT", f"MOTOR_STOP,{reason}")
+        self.motion_active = False
+        self.motion_var.set("Stopped")
+        if self.connected:
+            self.status_var.set("Stop command active; wait for counts to settle before capture.")
+        self.update_motor_controls()
+
+    def zero_display(self) -> None:
+        if not self.frames:
+            return
+        frame = self.frames[-1]
+        if frame.left_unwrapped is None or frame.right_unwrapped is None:
+            return
+        self.display_zero_left = frame.left_unwrapped
+        self.display_zero_right = frame.right_unwrapped
+        self.write_raw("EVENT", f"DISPLAY_ZERO,{frame.left_count},{frame.right_count}")
+        self.update_encoder_display(frame)
+        self.status_var.set(
+            "显示计数已清零；原始编码器值保留，仅清零本次标定的相对计数。"
+        )
+
+    def update_encoder_display(self, frame: EncoderFrame) -> None:
+        if frame.left_unwrapped is None or frame.right_unwrapped is None:
+            return
+        if self.display_zero_left is None or self.display_zero_right is None:
+            self.display_zero_left = frame.left_unwrapped
+            self.display_zero_right = frame.right_unwrapped
+        left_delta = frame.left_unwrapped - self.display_zero_left
+        right_delta = frame.right_unwrapped - self.display_zero_right
+        self.left_var.set(
+            f"{left_delta:+d}\n{left_delta / LEFT_ENCODER_COUNTS_PER_WHEEL_REV:+.5f} 圈 | 原始 {frame.left_count}"
+        )
+        self.right_var.set(
+            f"{right_delta:+d}\n{right_delta / RIGHT_ENCODER_COUNTS_PER_WHEEL_REV:+.5f} 圈 | 原始 {frame.right_count}"
+        )
+
     def toggle_connection(self) -> None:
         if self.worker is not None:
             self.disconnect()
@@ -423,6 +580,10 @@ class EncoderCalibrationApp:
         self.controller_state = None
         self.ctl_safe_streak = 0
         self.sample_start = None
+        self.motion_active = False
+        self.display_zero_left = None
+        self.display_zero_right = None
+        self.motion_var.set("Stopped")
         self.stop_event = threading.Event()
         self.worker = SerialWorker(port, self.events, self.stop_event)
         self.set_connection_controls(connecting=True)
@@ -432,13 +593,14 @@ class EncoderCalibrationApp:
     def set_connection_controls(self, connecting: bool) -> None:
         self.port_combo.configure(state="disabled" if connecting else "readonly")
         self.refresh_button.configure(state="disabled" if connecting else "normal")
-        self.connect_button.configure(text="Disconnect" if connecting else "Connect")
+        self.connect_button.configure(text="断开" if connecting else "连接")
         self.connect_button.configure(
             state="normal" if connecting or self.port_labels else "disabled"
         )
 
     def disconnect(self) -> None:
         if self.worker is not None:
+            self.stop_motion("Disconnect")
             self.status_var.set("Stopping zero-speed link...")
             self.stop_event.set()
             self.connect_button.configure(state="disabled")
@@ -547,6 +709,7 @@ class EncoderCalibrationApp:
         self.left_radio.configure(state="normal")
         self.right_radio.configure(state="normal")
         self.turns_entry.configure(state="normal")
+        self.update_motor_controls()
         self.update_capture_ready()
 
     def capture_start(self) -> None:
@@ -573,6 +736,7 @@ class EncoderCalibrationApp:
         self.left_radio.configure(state="disabled")
         self.right_radio.configure(state="disabled")
         self.turns_entry.configure(state="disabled")
+        self.update_motor_controls()
         self.write_raw("EVENT", f"CAPTURE_START,{self.sample_wheel},{turns},{sample.left_count},{sample.right_count}")
 
     def capture_end(self) -> None:
@@ -666,6 +830,7 @@ class EncoderCalibrationApp:
         self.left_radio.configure(state="normal")
         self.right_radio.configure(state="normal")
         self.turns_entry.configure(state="normal")
+        self.update_motor_controls()
         self.update_capture_ready()
         if warning:
             messagebox.showwarning(
@@ -730,11 +895,11 @@ class EncoderCalibrationApp:
                 right_unwrapped=right_unwrapped,
             )
             self.frames.append(frame)
-            self.left_var.set(str(frame.left_count))
-            self.right_var.set(str(frame.right_count))
+            self.update_encoder_display(frame)
             self.telemetry_var.set(f"seq {frame.sequence}")
             if frame.sequence % 10 == 0:
                 self.append_raw(line)
+            self.update_motor_controls()
             self.update_capture_ready()
             return
 
@@ -751,6 +916,8 @@ class EncoderCalibrationApp:
                     command_az_mradps=values[7],
                     target_left_mmps=values[8],
                     target_right_mmps=values[9],
+                    measured_left_mmps=values[10],
+                    measured_right_mmps=values[11],
                     left_output=values[12],
                     right_output=values[13],
                 )
@@ -766,12 +933,15 @@ class EncoderCalibrationApp:
                         self.ctl_safe_streak = 1
                 else:
                     self.ctl_safe_streak = 0
-                    self.abort_capture("controller left the safe zero-output state")
                 self.controller_state = state
                 self.ctl_var.set(
                     f"mode={values[2]} valid={values[4]} "
-                    f"out={values[12]}/{values[13]}"
+                    f"target={values[8]}/{values[9]} mm/s "
+                    f"measured={values[10]}/{values[11]} mm/s"
                 )
+                if self.motion_active and (state.mode != 1 or state.emergency != 0 or state.command_valid != 1):
+                    self.stop_motion("Controller rejected the calibration command")
+                    self.abort_capture("controller rejected the calibration command")
                 self.update_capture_ready()
             except ValueError:
                 self.controller_state = None
@@ -787,7 +957,8 @@ class EncoderCalibrationApp:
                 kind, value = self.events.get_nowait()
                 if kind == "connected":
                     self.connected = True
-                    self.status_var.set(f"Connected to {value}; transmitting zero speed only")
+                    self.status_var.set(f"Connected to {value}; motors stopped")
+                    self.update_motor_controls()
                     self.write_raw("EVENT", f"CONNECTED,{value}")
                 elif kind == "tx":
                     self.write_raw("TX", str(value))
@@ -802,6 +973,8 @@ class EncoderCalibrationApp:
                     self.abort_capture(f"serial disconnected{': ' + error if error else ''}")
                     self.connected = False
                     self.worker = None
+                    self.motion_active = False
+                    self.motion_var.set("Stopped")
                     self.frames.clear()
                     self.controller_state = None
                     self.ctl_safe_streak = 0
@@ -813,6 +986,7 @@ class EncoderCalibrationApp:
                     self.right_radio.configure(state="normal")
                     self.turns_entry.configure(state="normal")
                     self.set_connection_controls(connecting=False)
+                    self.update_motor_controls()
                     self.status_var.set(f"Disconnected: {error}" if error else "Disconnected")
                     self.write_raw("EVENT", f"DISCONNECTED,{error}")
                     if self.closing:

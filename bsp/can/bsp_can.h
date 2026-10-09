@@ -73,6 +73,19 @@ typedef struct
     void *id;                                   // 拥有can实例的模块地址,用于区分不同的模块(如果有需要的话),如果不需要可以不传入
 } CAN_Init_Config_s;
 
+typedef struct
+{
+    uint32_t tx_success_count;
+    uint32_t tx_failure_count;
+    uint32_t last_tx_failure_age_ms;
+    uint32_t hal_error_code;
+    uint32_t protocol_last_error_code;
+    uint8_t state;
+    uint8_t bus_off;
+    uint8_t error_passive;
+    uint8_t tx_fifo_free_level;
+} CAN_Diagnostic_s;
+
 /**
  * @brief Register a module to CAN service,remember to call this before using a CAN device
  *        注册(初始化)一个can实例,需要传入初始化配置的指针.
@@ -99,5 +112,11 @@ void CANSetDLC(CANInstance *_instance, uint8_t length);
  * @param _instance* can instance owned by module
  */
 uint8_t CANTransmit(CANInstance *_instance,float timeout);
+
+#ifdef FDCAN
+void CANGetDiagnostic(FDCAN_HandleTypeDef *can_handle, CAN_Diagnostic_s *diagnostic);
+#else
+void CANGetDiagnostic(CAN_HandleTypeDef *can_handle, CAN_Diagnostic_s *diagnostic);
+#endif
 
 #endif

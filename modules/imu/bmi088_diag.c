@@ -14,7 +14,9 @@
 #define BMI088_GYRO_BANDWIDTH_SETTING BMI088_GYRO_200_23_HZ
 #define BMI088_GYRO_FULL_SCALE_DPS 250.0f
 #define BMI088_GYRO_DPS_PER_COUNT (BMI088_GYRO_FULL_SCALE_DPS / 32768.0f)
-#define BMI088_GYRO_ROS_Z_SIGN 1.0f
+/* The installed sensor's raw +Z is clockwise viewed from above.  ROS
+ * base_link +Z is counterclockwise, so expose yaw/gyro with the opposite sign. */
+#define BMI088_GYRO_ROS_Z_SIGN -1.0f
 #define BMI088_SAMPLE_TIMEOUT_S 0.030f
 #define BMI088_STARTUP_BIAS_SAMPLES 600U
 #define BMI088_STARTUP_RESET_MISSES 20U

@@ -6,15 +6,13 @@
 #include "bsp_dwt.h"
 #include "rfid_reader.h"
 
-#define VOICE_TTS_STARTUP_DELAY_MS      3000U
-#define VOICE_TTS_MIN_INTERVAL_MS       1200U
-#define VOICE_TTS_TX_BASE_TIMEOUT_MS    300U
-#define VOICE_TTS_TX_PER_BYTE_TIMEOUT_MS 20U
-#define VOICE_TTS_TX_BUFFER_SIZE        96U
-#define VOICE_TTS_RFID_NUMBER_MAX_BYTES 16U
-#define VOICE_TTS_SAME_UID_RESET_MS     1000U
-#define VOICE_TTS_BYTE_DELAY_S          0.002f
-#define VOICE_TTS_END_DELAY_S           0.004f
+#define VOICE_TTS_STARTUP_DELAY_MS       3000U
+#define VOICE_TTS_MIN_INTERVAL_MS        1200U
+#define VOICE_TTS_TX_BUFFER_SIZE         96U
+#define VOICE_TTS_RFID_NUMBER_MAX_BYTES  16U
+#define VOICE_TTS_SAME_UID_RESET_MS      1000U
+#define VOICE_TTS_BYTE_DELAY_S           0.002f
+#define VOICE_TTS_END_DELAY_S            0.004f
 
 typedef enum
 {
@@ -87,12 +85,6 @@ static const uint8_t voice_number_text_lens[] = {
     sizeof(voice_number_12),
 };
 
-static uint32_t VoiceTTSTxTimeout(uint16_t len)
-{
-    return VOICE_TTS_TX_BASE_TIMEOUT_MS +
-           (uint32_t)len * VOICE_TTS_TX_PER_BYTE_TIMEOUT_MS;
-}
-
 static uint16_t VoiceTTSBuildRFIDNumberText(uint8_t number, uint8_t *buffer,
                                             uint16_t capacity)
 {
@@ -146,7 +138,6 @@ static uint8_t VoiceTTSWrite(const uint8_t *data, uint16_t len)
         len > VOICE_TTS_TX_BUFFER_SIZE || voice_uart->Instance == NULL)
         return 0U;
 
-    (void)VoiceTTSTxTimeout(len);
     for (index = 0U; index < len; index++)
     {
         voice_uart->Instance->TDR = data[index];
@@ -155,6 +146,7 @@ static uint8_t VoiceTTSWrite(const uint8_t *data, uint16_t len)
     DWT_Delay(VOICE_TTS_END_DELAY_S);
 
     voice_state.last_tx_time_ms = HAL_GetTick();
+    voice_next_tx_time_ms = voice_state.last_tx_time_ms + VOICE_TTS_MIN_INTERVAL_MS;
     voice_state.tx_count++;
     voice_state.status |= VOICE_TTS_STATUS_TX_OK;
     voice_state.status &= (uint8_t)~VOICE_TTS_STATUS_TX_ERROR;
@@ -242,7 +234,6 @@ void VoiceTTSTask(void)
         (void)VoiceTTSSpeakGBK(voice_startup_text,
                                (uint16_t)sizeof(voice_startup_text));
         voice_startup_stage = VOICE_TTS_STAGE_READY;
-        voice_next_tx_time_ms = now + VOICE_TTS_MIN_INTERVAL_MS;
         return;
     }
 
@@ -276,7 +267,6 @@ void VoiceTTSTask(void)
         (void)VoiceTTSSpeakGBK(rfid_number_text, rfid_number_text_len);
         voice_last_card_sequence = rfid_state.card_sequence;
         VoiceTTSRememberRFIDUid(&rfid_state);
-        voice_next_tx_time_ms = now + VOICE_TTS_MIN_INTERVAL_MS;
     }
 }
 

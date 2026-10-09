@@ -99,7 +99,9 @@ void VisionSetNavigationMode(uint8_t enabled)
 #endif
 #include "chassis.h"
 #include "rfid_reader.h"
+#if !ROBOT_HOST_ONLY_SPEECH
 #include "voice_tts.h"
+#endif
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
@@ -107,6 +109,7 @@ void VisionSetNavigationMode(uint8_t enabled)
 
 #define HOST_COMMAND_LINE_MAX        96U
 #define HOST_RX_BUFFER_SIZE         256U
+#define HOST_TX_BUFFER_SIZE        1024U
 #define HOST_COMMAND_TIMEOUT_MS     500U
 #define HOST_ENCODER_REPORT_MS       20U
 #define HOST_CONTROL_REPORT_MS      100U
@@ -154,6 +157,7 @@ static int32_t HostToMilli(float value)
     return (int32_t)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
 }
 
+#if !ROBOT_USE_REMOTE_TEST_MODE
 static uint8_t HostParseFloat(char **cursor, float *value, char separator)
 {
     char *end;
@@ -177,9 +181,15 @@ static uint8_t HostParseFloat(char **cursor, float *value, char separator)
     *cursor = end;
     return 1U;
 }
+#endif
 
 static void HostParseVelocity(void)
 {
+#if ROBOT_USE_REMOTE_TEST_MODE
+    /* Keep USB telemetry and TTS available, but discard serial motion lines
+     * while the chassis command source is the remote controller. */
+    return;
+#else
     char *cursor = host_command_line;
     float vx;
     float az;
@@ -199,8 +209,10 @@ static void HostParseVelocity(void)
     host_command_valid = 1U;
     if (vision_application_callback)
         vision_application_callback();
+#endif
 }
 
+#if !ROBOT_HOST_ONLY_SPEECH
 static uint8_t HostParseTTS(void)
 {
     const char prefix[] = "TTS,";
@@ -214,11 +226,14 @@ static uint8_t HostParseTTS(void)
                      (uint16_t)(host_command_length - prefix_len));
     return 1U;
 }
+#endif
 
 static void HostParseCommand(void)
 {
+#if !ROBOT_HOST_ONLY_SPEECH
     if (HostParseTTS())
         return;
+#endif
 
     HostParseVelocity();
 }
@@ -401,6 +416,40 @@ static int HostAppendControl(char *buffer, size_t capacity, uint32_t now,
         (int)chassis->right_output);
 }
 
+static int HostAppendMotor(char *buffer, size_t capacity, uint32_t now,
+                           uint32_t sequence,
+                           const Chassis_Host_Feedback_s *chassis)
+{
+    return snprintf(buffer, capacity,
+                    "MTR,%lu,%lu,%u,%d,%d,%d,%d,%u,%u,"
+                    "%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,"
+                    "%u,%lu,%lu,%u,%u,%u\r\n",
+                    (unsigned long)now,
+                    (unsigned long)sequence,
+                    (unsigned int)chassis->drive_status,
+                    (int)chassis->left_current,
+                    (int)chassis->right_current,
+                    (int)chassis->left_integral_output,
+                    (int)chassis->right_integral_output,
+                    (unsigned int)chassis->left_temperature,
+                    (unsigned int)chassis->right_temperature,
+                    (unsigned int)chassis->left_feedback_online,
+                    (unsigned int)chassis->right_feedback_online,
+                    (unsigned long)chassis->left_feedback_age_ms,
+                    (unsigned long)chassis->right_feedback_age_ms,
+                    (unsigned long)chassis->left_feedback_count,
+                    (unsigned long)chassis->right_feedback_count,
+                    (unsigned long)chassis->can_tx_success_count,
+                    (unsigned long)chassis->can_tx_failure_count,
+                    (unsigned long)chassis->can_last_tx_failure_age_ms,
+                    (unsigned int)chassis->can_state,
+                    (unsigned long)chassis->can_hal_error_code,
+                    (unsigned long)chassis->can_protocol_last_error_code,
+                    (unsigned int)chassis->can_bus_off,
+                    (unsigned int)chassis->can_error_passive,
+                    (unsigned int)chassis->can_tx_fifo_free_level);
+}
+
 static int HostAppendAttitude(char *buffer, size_t capacity, uint32_t send_time_ms)
 {
     uint32_t sequence = host_att_sequence++;
@@ -449,6 +498,19 @@ static int HostAppendHeadingHold(char *buffer, size_t capacity, uint32_t now,
                     (long)HostToMilli(chassis->heading_correction_ref));
 }
 
+static int HostAppendStraightSync(char *buffer, size_t capacity, uint32_t now,
+                                  uint32_t sequence,
+                                  const Chassis_Host_Feedback_s *chassis)
+{
+    return snprintf(buffer, capacity,
+                    "SYN,%lu,%lu,%u,%ld,%ld\r\n",
+                    (unsigned long)now,
+                    (unsigned long)sequence,
+                    (unsigned int)chassis->sync_active,
+                    (long)HostToMilli(chassis->sync_phase_error_deg),
+                    (long)HostToMilli(chassis->sync_correction_ref));
+}
+
 static void HostFormatRFIDUid(const RFID_State_s *rfid, char *uid_hex, size_t capacity)
 {
     static const char hex[] = "0123456789ABCDEF";
@@ -470,24 +532,29 @@ static int HostAppendRFID(char *buffer, size_t capacity, uint32_t now,
 {
     RFID_State_s rfid;
     char uid_hex[RFID_UID_MAX_SIZE * 2U + 1U];
+    uint32_t report_time_ms;
+    uint32_t report_sequence;
 
     RFIDGetState(&rfid);
     HostFormatRFIDUid(&rfid, uid_hex, sizeof(uid_hex));
+    report_time_ms = (rfid.update_time_ms != 0U) ? rfid.update_time_ms : now;
+    report_sequence = (rfid.card_sequence != 0U) ? rfid.card_sequence : sequence;
 
     return snprintf(buffer, capacity,
-                    "RFID,%lu,%lu,%u,%u,%u,%u,%s\r\n",
-                    (unsigned long)now,
-                    (unsigned long)sequence,
+                    "RFID,%lu,%lu,%u,%u,%u,%u,%u,%s\r\n",
+                    (unsigned long)report_time_ms,
+                    (unsigned long)report_sequence,
                     (unsigned int)rfid.status,
                     (unsigned int)rfid.protocol_status,
                     (unsigned int)rfid.tag_type,
                     (unsigned int)rfid.sak,
+                    (unsigned int)rfid.number,
                     uid_hex);
 }
 
 void VisionSend(void)
 {
-    char send_buffer[512];
+    char send_buffer[HOST_TX_BUFFER_SIZE];
     Chassis_Host_Feedback_s chassis;
 #if !CHASSIS_USE_INS
     BMI088DiagSample imu;
@@ -542,12 +609,26 @@ void VisionSend(void)
         if (appended <= 0 || appended >= (int)(sizeof(send_buffer) - (size_t)length))
             return;
         length += appended;
+
+        appended = HostAppendStraightSync(send_buffer + length,
+                                          sizeof(send_buffer) - (size_t)length,
+                                          now, sequence, &chassis);
+        if (appended <= 0 || appended >= (int)(sizeof(send_buffer) - (size_t)length))
+            return;
+        length += appended;
     }
     if (control_due)
     {
         appended = HostAppendControl(send_buffer + length,
                                      sizeof(send_buffer) - (size_t)length,
                                      now, sequence, &chassis);
+        if (appended <= 0 || appended >= (int)(sizeof(send_buffer) - (size_t)length))
+            return;
+        length += appended;
+
+        appended = HostAppendMotor(send_buffer + length,
+                                   sizeof(send_buffer) - (size_t)length,
+                                   now, sequence, &chassis);
         if (appended <= 0 || appended >= (int)(sizeof(send_buffer) - (size_t)length))
             return;
         length += appended;

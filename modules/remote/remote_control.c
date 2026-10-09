@@ -6,7 +6,7 @@
 #include "daemon.h"
 #include "bsp_log.h"
 
-#define REMOTE_CONTROL_FRAME_SIZE 18u // 遥控器接收的buffer大小
+#define REMOTE_CONTROL_FRAME_SIZE 25u // SBUS帧长
 #define SBUS 1
 // #define DBUS 1
 // 遥控器数据
@@ -18,15 +18,22 @@ static USARTInstance *rc_usart_instance;
 static DaemonInstance *rc_daemon_instance;
 uint8_t sbus_rx_sta = 0;
 
+#define RC_ROCKER_LIMIT 660
+
 /**
- * @brief 矫正遥控器摇杆的值,超过660或者小于-660的值都认为是无效值,置0
+ * @brief 矫正遥控器摇杆的值,超过常规量程时限幅,避免满杆被误判为0
  *
  */
 static void RectifyRCjoystick()
 {
     for (uint8_t i = 0; i < 5; ++i)
-        if (abs(*(&rc_ctrl[TEMP].rc.rocker_l_ + i)) > 660)
-            *(&rc_ctrl[TEMP].rc.rocker_l_ + i) = 0;
+    {
+        int16_t *value = &rc_ctrl[TEMP].rc.rocker_l_ + i;
+        if (*value > RC_ROCKER_LIMIT)
+            *value = RC_ROCKER_LIMIT;
+        else if (*value < -RC_ROCKER_LIMIT)
+            *value = -RC_ROCKER_LIMIT;
+    }
 }
 
 /**
@@ -110,17 +117,17 @@ static void sbus_to_rc(const uint8_t *sbus_buf)
     rc_ctrl[TEMP].rc.rocker_l1 =(((sbus_buf[3] >> 6) | (sbus_buf[4] << 2) | (sbus_buf[5] << 10)) & 0x07ff) - RC_CH_VALUE_OFFSET;       //!< Channel 2   
     rc_ctrl[TEMP].rc.rocker_l_ = (((sbus_buf[5] >> 1) | (sbus_buf[6] << 7)) & 0x07ff) - RC_CH_VALUE_OFFSET;                //!< Channel 3
     rc_ctrl[TEMP].rc.a[4] = (((sbus_buf[7] << 4) | (sbus_buf[6] >>4)) & 0x07ff) - RC_CH_VALUE_OFFSET;
-    rc_ctrl[TEMP].rc.a[5] =((sbus_buf[9]<<9)   | (sbus_buf[8]<<1) | (sbus_buf[7]>>7)) & 0x07ff- RC_CH_VALUE_OFFSET;
-    rc_ctrl[TEMP].rc.a[6] =((sbus_buf[10]<<6)  | (sbus_buf[9]>>2)) & 0x07ff- RC_CH_VALUE_OFFSET;  //右侧上中下
-    rc_ctrl[TEMP].rc.a[7] =((sbus_buf[11]<<3)  | (sbus_buf[10]>>5)) & 0x07ff- RC_CH_VALUE_OFFSET;  //右侧上下  发单
-    rc_ctrl[TEMP].rc.a[8] =((sbus_buf[13]<<8)  | (sbus_buf[12])) & 0x07ff- RC_CH_VALUE_OFFSET;
-    rc_ctrl[TEMP].rc.a[9] =((sbus_buf[14]<<5)  | (sbus_buf[13]>>3)) & 0x07ff- RC_CH_VALUE_OFFSET;
-    rc_ctrl[TEMP].rc.a[10]=((sbus_buf[16]<<10) | (sbus_buf[15]<<2) | (sbus_buf[14]>>6)) & 0x07ff- RC_CH_VALUE_OFFSET;
-    rc_ctrl[TEMP].rc.a[11]=((sbus_buf[17]<<7)  | (sbus_buf[16]>>1)) & 0x07ff- RC_CH_VALUE_OFFSET;
-    rc_ctrl[TEMP].rc.a[12]=((sbus_buf[18]<<4)  | (sbus_buf[17]>>4)) & 0x07ff- RC_CH_VALUE_OFFSET;
-    rc_ctrl[TEMP].rc.a[13]=((sbus_buf[20]<<9)  | (sbus_buf[19]<<1) | (sbus_buf[18]>>7)) & 0x07ff- RC_CH_VALUE_OFFSET;
-    rc_ctrl[TEMP].rc.a[14]=((sbus_buf[21]<<6)  | (sbus_buf[20]>>2)) & 0x07ff- RC_CH_VALUE_OFFSET;
-    rc_ctrl[TEMP].rc.a[15]=((sbus_buf[22]<<3)  | (sbus_buf[21]>>5)) & 0x07ff- RC_CH_VALUE_OFFSET;
+    rc_ctrl[TEMP].rc.a[5] = ((sbus_buf[9] << 9) | (sbus_buf[8] << 1) | (sbus_buf[7] >> 7)) & (0x07ff - RC_CH_VALUE_OFFSET);
+    rc_ctrl[TEMP].rc.a[6] = ((sbus_buf[10] << 6) | (sbus_buf[9] >> 2)) & (0x07ff - RC_CH_VALUE_OFFSET);  //右侧上中下
+    rc_ctrl[TEMP].rc.a[7] = ((sbus_buf[11] << 3) | (sbus_buf[10] >> 5)) & (0x07ff - RC_CH_VALUE_OFFSET);  //右侧上下  发单
+    rc_ctrl[TEMP].rc.a[8] = ((sbus_buf[13] << 8) | (sbus_buf[12])) & (0x07ff - RC_CH_VALUE_OFFSET);
+    rc_ctrl[TEMP].rc.a[9] = ((sbus_buf[14] << 5) | (sbus_buf[13] >> 3)) & (0x07ff - RC_CH_VALUE_OFFSET);
+    rc_ctrl[TEMP].rc.a[10] = ((sbus_buf[16] << 10) | (sbus_buf[15] << 2) | (sbus_buf[14] >> 6)) & (0x07ff - RC_CH_VALUE_OFFSET);
+    rc_ctrl[TEMP].rc.a[11] = ((sbus_buf[17] << 7) | (sbus_buf[16] >> 1)) & (0x07ff - RC_CH_VALUE_OFFSET);
+    rc_ctrl[TEMP].rc.a[12] = ((sbus_buf[18] << 4) | (sbus_buf[17] >> 4)) & (0x07ff - RC_CH_VALUE_OFFSET);
+    rc_ctrl[TEMP].rc.a[13] = ((sbus_buf[20] << 9) | (sbus_buf[19] << 1) | (sbus_buf[18] >> 7)) & (0x07ff - RC_CH_VALUE_OFFSET);
+    rc_ctrl[TEMP].rc.a[14] = ((sbus_buf[21] << 6) | (sbus_buf[20] >> 2)) & (0x07ff - RC_CH_VALUE_OFFSET);
+    rc_ctrl[TEMP].rc.a[15] = ((sbus_buf[22] << 3) | (sbus_buf[21] >> 5)) & (0x07ff - RC_CH_VALUE_OFFSET);
     //右侧三档 SC 上为小陀螺 中为随动 下为普通
     if(rc_ctrl[TEMP].rc.a[5] == 159)
     {rc_ctrl[TEMP].rc.switch_right = 3;}
@@ -144,6 +151,7 @@ static void sbus_to_rc(const uint8_t *sbus_buf)
     {rc_ctrl[TEMP].rc.dial = 1;}
     else if(rc_ctrl[TEMP].rc.a[6] == 0)
     {rc_ctrl[TEMP].rc.dial = 2;}   
+    RectifyRCjoystick();
     // 控制自定义控制器
     if(rc_ctrl[TEMP].rc.a[7] == 159)
     {rc_ctrl[TEMP].rc.sa = 3;}

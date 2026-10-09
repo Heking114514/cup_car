@@ -163,6 +163,8 @@ static void DecodeDJIMotor(CANInstance *_instance)
 
     DaemonReload(motor->daemon);
     motor->dt = DWT_GetDeltaT(&motor->feed_cnt);
+    motor->feedback_count++;
+    motor->last_feedback_ms = HAL_GetTick();
 
     // 解析数据并对电流和速度进行滤波,电机的反馈报文具体格式见电机说明手册
     measure->last_ecd = measure->ecd;
@@ -327,6 +329,12 @@ void DJIMotorControl()
         if (motor_setting->close_loop_type & CURRENT_LOOP)
         {
             pid_ref = PIDCalculate(&motor_controller->current_PID, measure->real_current, pid_ref);
+        }
+        else if (motor_setting->close_loop_type & SPEED_LOOP)
+        {
+            LIMIT_MIN_MAX(pid_ref,
+                          motor_controller->speed_PID.MaxOut_,
+                          motor_controller->speed_PID.MaxOut);
         }
 
         if (motor_setting->feedback_reverse_flag == FEEDBACK_DIRECTION_REVERSE)

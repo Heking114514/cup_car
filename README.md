@@ -347,3 +347,48 @@ https://gitee.com/LitzJ/basic_framework_mc02
 ```text
 https://gitee.com/hnuyuelurm/basic_framework
 ```
+
+## 7. 左右轮编码器标定
+
+当前正式标定固件使用 USB 虚拟串口控制，遥控开关位于
+`application/robot_def.h`。`ROBOT_USE_REMOTE_TEST_MODE=0` 表示串口控制，改回
+`1` 并重新编译即可恢复遥控。
+
+启动图形标定工具：
+
+```bash
+cd /home/hjh/cup_corporate/cup_car_mc02car
+python3 encoder_calibration_gui.py
+```
+
+连接 STM32 串口后选择左轮或右轮，以默认低速正转或反转。程序每 100 ms
+续发一次控制命令；停止、断开串口或关闭窗口时会连续发送零速命令，下位机
+超过 500 ms 收不到命令也会自动停车。界面显示累计编码器值、清零后增量和
+换算圈数，并将每次标定结果写入 `encoder_calibration_logs/`。
+
+2026-10-06 正式标定采用的每项输入都是轮子转 10 圈的编码器总增量。左轮 5
+次均值为 `368867.22 count/圈`，右轮 6 次均值为
+`368883.76666666666 count/圈`；轮胎直径保持 `60.4 mm`。这些左右轮独立值
+同时用于下位机速度换算和上位机轮式里程计，不再使用旧的 P36/`294912`
+假设。
+
+全部原始样本与计算过程见
+[`abjust/WHEEL_ENCODER_CALIBRATION_20261006.md`](abjust/WHEEL_ENCODER_CALIBRATION_20261006.md)。
+
+## 8. 150 秒直行阶梯测试
+
+```bash
+cd /home/hjh/cup_corporate/cup_car_mc02car
+python3 straight_line_test_gui.py
+```
+
+连接 STM32 虚拟串口并等待 BMI088 bias 有效后，点击“开始150秒测试”。脚本
+固定发送 `az=0`，并依次发送正向 `vx=0.03`、`0.06`、`0.09`、`0.12`、
+`0.15 m/s`，每档 30 秒，150 秒后自动停车。理论总行程约 `13.5 m`。按
+`Esc`、点击停止、关闭窗口、串口断开或检测到下位机驱动故障时都会立即发送
+零速命令。
+
+每次启动脚本都会在 `straight_test_logs/` 创建原始串口、逐帧文本和 CSV 三份
+日志。CSV 用 `profile_stage=1..5` 标记速度档位，并记录 ENC、IMU、ATT、HLD、
+SYN、CTL、MTR 和 RFID 的全部字段。`SYN` 是左右编码器归一化相位误差和
+互补融合中的编码器贡献，用于分析单一融合航向 PID。

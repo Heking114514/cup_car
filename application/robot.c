@@ -4,7 +4,9 @@
 #include "robot_task.h"
 #include "rfid_reader.h"
 #include "usart.h"
+#if !ROBOT_HOST_ONLY_SPEECH || ROBOT_ENABLE_HOST_TTS_COMMAND
 #include "voice_tts.h"
+#endif
 
 // 编译warning,提醒开发者修改机器人参数
 #ifndef ROBOT_DEF_PARAM_WARNING
@@ -36,7 +38,9 @@ void RobotInit()
 #endif
 
     RFIDInit(&huart10);
+#if !ROBOT_HOST_ONLY_SPEECH
     VoiceTTSInit(&huart7);
+#endif
 
 #if defined(ONE_BOARD) || defined(CHASSIS_BOARD)
     ChassisInit();
@@ -53,7 +57,9 @@ void RobotTask()
 {
 #if defined(ONE_BOARD) || defined(GIMBAL_BOARD)
     RFIDTask();
+#if !ROBOT_HOST_ONLY_SPEECH
     VoiceTTSTask();
+#endif
     RobotCMDTask();
 #endif
 
