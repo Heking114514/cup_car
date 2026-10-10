@@ -3,6 +3,9 @@
 #include "daemon.h"
 #include "bsp_log.h"
 #include <string.h>
+#if ROBOT_ENABLE_HOST_TTS_COMMAND
+#include "voice_tts.h"
+#endif
 
 static Vision_Recv_s recv_data;
 static Vision_Send_s send_data;
@@ -99,7 +102,7 @@ void VisionSetNavigationMode(uint8_t enabled)
 #endif
 #include "chassis.h"
 #include "rfid_reader.h"
-#if !ROBOT_HOST_ONLY_SPEECH
+#if ROBOT_ENABLE_HOST_TTS_COMMAND
 #include "voice_tts.h"
 #endif
 #include <limits.h>
@@ -212,7 +215,7 @@ static void HostParseVelocity(void)
 #endif
 }
 
-#if !ROBOT_HOST_ONLY_SPEECH
+#if ROBOT_ENABLE_HOST_TTS_COMMAND
 static uint8_t HostParseTTS(void)
 {
     const char prefix[] = "TTS,";
@@ -230,7 +233,7 @@ static uint8_t HostParseTTS(void)
 
 static void HostParseCommand(void)
 {
-#if !ROBOT_HOST_ONLY_SPEECH
+#if ROBOT_ENABLE_HOST_TTS_COMMAND
     if (HostParseTTS())
         return;
 #endif

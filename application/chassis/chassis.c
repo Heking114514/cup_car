@@ -52,6 +52,7 @@ float v_debug=4000.0;
 #define CHASSIS_STILL_SPEED_EPSILON 20.0f
 #define CHASSIS_IMU_MAX_AGE_MS 80U
 #define CHASSIS_WHEEL_REF_LIMIT 13000.0f
+#define CHASSIS_INNER_WHEEL_MIN_REF 1000.0f
 #define CHASSIS_STRAIGHT_LEFT_TRIM 1.0f
 #define CHASSIS_STRAIGHT_RIGHT_TRIM 1.0f
 #define CHASSIS_JLINK_TEST_ONLY 0U
@@ -166,6 +167,24 @@ static float ChassisLimitMagnitude(float value, float limit)
     if (value < -limit)
         return -limit;
     return value;
+}
+
+static void ChassisLimitInsideWheel(float base_v, float *turn_ref)
+{
+    float max_turn;
+    float speed_abs = fabsf(base_v);
+
+    /* For a pivot turn there is no inside wheel.  For a moving turn, keep
+     * enough reference on the inside wheel for its speed loop to overcome
+     * static friction instead of silently becoming a stopped wheel. */
+    if (speed_abs < CHASSIS_INNER_WHEEL_MIN_REF ||
+        fabsf(*turn_ref) < CHASSIS_STRAIGHT_W_EPSILON)
+        return;
+
+    max_turn = speed_abs - CHASSIS_INNER_WHEEL_MIN_REF;
+    if (max_turn < 0.0f)
+        max_turn = 0.0f;
+    *turn_ref = ChassisClamp(*turn_ref, max_turn);
 }
 
 static void ChassisLimitWheelRefs(float *left_ref, float *right_ref)
@@ -1053,6 +1072,7 @@ void ChassisInit()
                 .MaxOut = 10000,
                 .MaxOut_ = -10000
             },
+            .current_feedforward_ptr = &chassis_left_current_ff,
         },
         .controller_setting_init_config = {
             .angle_feedback_source = MOTOR_FEED, .speed_feedback_source = MOTOR_FEED,
@@ -1062,6 +1082,7 @@ void ChassisInit()
              * software speed PI directly outputs the requested current.
              */
             .close_loop_type = SPEED_LOOP,
+            .feedforward_flag = CURRENT_FEEDFORWARD,
             .motor_reverse_flag = MOTOR_DIRECTION_NORMAL, // 注意方向设置为拨盘的拨出的击发方向
         },
         .motor_type = M2006
@@ -1079,6 +1100,8 @@ void ChassisInit()
 
     chassis_motor_config.can_init_config.tx_id = CHASSIS_MOTOR_RIGHT_ID;
     chassis_motor_config.controller_setting_init_config.motor_reverse_flag = MOTOR_DIRECTION_NORMAL;
+    chassis_motor_config.controller_param_init_config.current_feedforward_ptr =
+        &chassis_right_current_ff;
     ChassisSetWheelSpeedPidConfig(&chassis_motor_config,
                                   CHASSIS_RIGHT_SPEED_KP,
                                   CHASSIS_RIGHT_SPEED_KI,
@@ -1174,6 +1197,9 @@ void ChassisTask()
         w_ref = ChassisApplyHeadingAssist(chassis_cmd_recv.v, chassis_cmd_recv.w);
 #endif
 
+    if (!should_stop)
+        ChassisLimitInsideWheel(chassis_cmd_recv.v, &w_ref);
+
 #if !(ROBOT_USE_REMOTE_TEST_MODE && CHASSIS_JLINK_TEST_ONLY)
     left_ref = chassis_cmd_recv.v - w_ref;
     right_ref = chassis_cmd_recv.v + w_ref;
@@ -1186,6 +1212,11 @@ void ChassisTask()
 
     ChassisLimitWheelRefs(&left_ref, &right_ref);
 
+    /* Apply only bounded low-speed friction feedforward.  This is added by
+     * DJI motor control after the speed PI and is therefore a current command,
+     * not a second speed reference. */
+    ChassisUpdateFrictionCompensation(left_ref, right_ref, should_stop);
+
     DJIMotorSetRef(motor_l, left_ref);
     DJIMotorSetRef(motor_r, right_ref);
 }
@@ -1197,12 +1228,16 @@ void ChassisGetHostFeedback(Chassis_Host_Feedback_s *feedback)
     const float right_degps_to_mps = PERIMETER_WHEEL /
         (1000.0f * 360.0f * RIGHT_REDUCTION_RATIO_WHEEL);
     uint32_t primask;
+    uint32_t now;
+    CAN_Diagnostic_s can_diagnostic;
 
     if (feedback == NULL)
         return;
 
     primask = __get_PRIMASK();
     __disable_irq();
+    now = HAL_GetTick();
+    CANGetDiagnostic(&hcan1, &can_diagnostic);
     feedback->left_total_count = ChassisMotorCount(motor_l, -1);
     feedback->right_total_count = ChassisMotorCount(motor_r, 1);
     feedback->target_left_mps =
@@ -1217,6 +1252,32 @@ void ChassisGetHostFeedback(Chassis_Host_Feedback_s *feedback)
     feedback->right_output = motor_r->set_value;
     feedback->left_stop_flag = motor_l->stop_flag;
     feedback->right_stop_flag = motor_r->stop_flag;
+    feedback->left_current = (int16_t)-motor_l->measure.real_current;
+    feedback->right_current = motor_r->measure.real_current;
+    feedback->left_integral_output = (int16_t)-motor_l->motor_controller.speed_PID.Iout;
+    feedback->right_integral_output = (int16_t)motor_r->motor_controller.speed_PID.Iout;
+    feedback->left_temperature = motor_l->measure.temperature;
+    feedback->right_temperature = motor_r->measure.temperature;
+    feedback->drive_status = wheel_drive_status;
+    feedback->left_feedback_count = motor_l->feedback_count;
+    feedback->right_feedback_count = motor_r->feedback_count;
+    feedback->left_feedback_age_ms = motor_l->feedback_count != 0U
+        ? now - motor_l->last_feedback_ms : UINT32_MAX;
+    feedback->right_feedback_age_ms = motor_r->feedback_count != 0U
+        ? now - motor_r->last_feedback_ms : UINT32_MAX;
+    feedback->left_feedback_online = motor_l->feedback_count != 0U &&
+        feedback->left_feedback_age_ms <= 80U && DaemonIsOnline(motor_l->daemon);
+    feedback->right_feedback_online = motor_r->feedback_count != 0U &&
+        feedback->right_feedback_age_ms <= 80U && DaemonIsOnline(motor_r->daemon);
+    feedback->can_tx_success_count = can_diagnostic.tx_success_count;
+    feedback->can_tx_failure_count = can_diagnostic.tx_failure_count;
+    feedback->can_last_tx_failure_age_ms = can_diagnostic.last_tx_failure_age_ms;
+    feedback->can_hal_error_code = can_diagnostic.hal_error_code;
+    feedback->can_protocol_last_error_code = can_diagnostic.protocol_last_error_code;
+    feedback->can_state = can_diagnostic.state;
+    feedback->can_bus_off = can_diagnostic.bus_off;
+    feedback->can_error_passive = can_diagnostic.error_passive;
+    feedback->can_tx_fifo_free_level = can_diagnostic.tx_fifo_free_level;
 #if CHASSIS_USE_BMI088_YAW_HOLD
     feedback->heading_active = heading_tracking;
     feedback->heading_ref_deg = heading_ref_deg;

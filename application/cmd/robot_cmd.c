@@ -214,6 +214,14 @@ static void NavigationControlSet()
                                       REMOTE_TEST_LINEAR_SLEW_REF_PER_S);
             remote_w_ref = RemoteSlew(remote_w_ref, target_w,
                                       REMOTE_TEST_ANGULAR_SLEW_REF_PER_S);
+
+            /* Apply the turn ratio to the slewed command as well.  Limiting
+             * only target_w lets the independent ramps temporarily make the
+             * inside wheel reference collapse toward zero. */
+            if (fabsf(remote_v_ref) > 0.0f)
+                remote_w_ref = RemoteClamp(
+                    remote_w_ref,
+                    fabsf(remote_v_ref) * REMOTE_TEST_MOVING_TURN_RATIO);
         }
     }
     else

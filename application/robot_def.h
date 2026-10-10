@@ -20,8 +20,9 @@
 
 #define VISION_USE_VCP // 使用虚拟串口发送视觉数据
 //#define VISION_USE_UART // 使用串口发送视觉数据
-#define ROBOT_USE_REMOTE_TEST_MODE 1 // 1=天地飞遥控；USB仅保留遥测/TTS，不控制底盘
+#define ROBOT_USE_REMOTE_TEST_MODE 0 // 0=USB虚拟串口控制底盘；1=天地飞遥控
 #define ROBOT_HOST_ONLY_SPEECH 1 // 关闭下位机自动播报，由上位机负责 RFID 语音
+#define ROBOT_ENABLE_HOST_TTS_COMMAND 1 // 接收上位机 TTS 文本并通过 UART7 播报
 #define CHASSIS_SPEED_LOOP_TUNING_MODE 0 // 0=启用增量式BMI088航向环
 #define CHASSIS_JLINK_TUNING_MODE 0    // 架空J-Link电机标定入口，地面测试必须为0
 #define CHASSIS_USE_INS 0             // 旧INS任务不参与本车导航控制

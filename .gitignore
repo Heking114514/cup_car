@@ -3,3 +3,4 @@
 /__pycache__/
 /encoder_calibration_logs/
 /straight_test_logs/
+/turn_rate_sweep_logs/

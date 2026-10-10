@@ -38,7 +38,7 @@ void RobotInit()
 #endif
 
     RFIDInit(&huart10);
-#if !ROBOT_HOST_ONLY_SPEECH
+#if !ROBOT_HOST_ONLY_SPEECH || ROBOT_ENABLE_HOST_TTS_COMMAND
     VoiceTTSInit(&huart7);
 #endif
 
