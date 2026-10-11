@@ -57,12 +57,12 @@
 #define RIGHT_REDUCTION_RATIO_WHEEL \
     (RIGHT_ENCODER_COUNTS_PER_WHEEL_REV / MOTOR_ENCODER_COUNTS_PER_REV)
 #define REAL_WZ_RAT   1000
-#define CHASSIS_YAW_HOLD_DIR -1.0f      // BMI088改为ROS符号后保持原实车纠偏方向
+#define CHASSIS_YAW_HOLD_DIR 1.0f       // yaw/编码器误差为负时减小左轮、增加右轮
 #define CHASSIS_YAW_HOLD_KP 20.0f       // 提高航向瞬态纠偏速度
-#define CHASSIS_YAW_HOLD_KI 0.15f       // 航向积分，消除长时间慢漂
+#define CHASSIS_YAW_HOLD_KI 0.20f       // 航向积分，消除长时间慢漂
 #define CHASSIS_YAW_HOLD_KD 4.0f        // bias后角速度阻尼
 #define CHASSIS_YAW_HOLD_DEADBAND 0.15f // 小角度死区，减少测速抖动
-#define CHASSIS_YAW_HOLD_ENCODER_ASSIST_GAIN 1.0f
+#define CHASSIS_YAW_HOLD_ENCODER_ASSIST_GAIN 1.15f
 #define CHASSIS_YAW_HOLD_ENCODER_ASSIST_MAX_DEG 12.0f
 #define CHASSIS_YAW_HOLD_FUSED_ERROR_MAX_DEG 12.0f
 #define CHASSIS_YAW_HOLD_MAX_RATIO 0.02f

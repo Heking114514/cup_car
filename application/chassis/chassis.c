@@ -931,6 +931,11 @@ static float ChassisApplyHeadingAssist(float base_v, float base_w)
 
     gyro_z_corrected_dps =
         imu.gyro_z_lpf_dps - imu.gyro_z_bias_dps;
+    /* The reference is captured when straight motion starts.  This was
+     * previously left at its static zero value, so BMI088 yaw never entered
+     * the heading loop even though HLD reported an active controller. */
+    heading_imu_error_deg = ChassisWrapDeg(
+        imu.yaw_deg - heading_ref_deg);
     encoder_yaw_error = -straight_last_phase_error_deg *
                         RADIUS_WHEEL / TRACK_WIDTH;
     predicted_error = ChassisWrapDeg(

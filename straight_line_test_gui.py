@@ -24,11 +24,10 @@ ENCODER_MAX_INTERVAL_MS = 500
 STOP_SETTLE_MS = 750
 MAX_LINEAR_SPEED_MPS = 0.40
 MAX_ANGULAR_SPEED_RADPS = 1.50
-DEFAULT_LEFT_TURN_RATE_RADPS = 0.60
-STRAIGHT_LEG_S = 10.0
-LEFT_TURN_ANGLE_DEG = 90.0
-TURN_TIMEOUT_S = 12.0
-IMU_YAW_VALID = 0x04
+STRAIGHT_STAGE_S = 5.0
+STRAIGHT_PROFILE_MPS = (0.03, 0.06, 0.09, 0.12, 0.15)
+# Match robot_def.h: wheel outer diameter 60.4 mm.
+WHEEL_CIRCUMFERENCE_M = 2.0 * math.pi * 0.0302
 
 CSV_FIELDS = (
     "host_time",
@@ -37,8 +36,9 @@ CSV_FIELDS = (
     "run_active",
     "requested_vx_mps",
     "requested_az_radps",
-    "route_phase",
-    "route_phase_elapsed_s",
+    "profile_stage",
+    "profile_elapsed_s",
+    "stage_elapsed_s",
     "frame_type",
     "parse_ok",
     "mcu_time_ms",
@@ -50,7 +50,17 @@ CSV_FIELDS = (
     "run_left_delta_count",
     "run_right_delta_count",
     "run_phase_error_count",
+    "run_left_wheel_rev",
+    "run_right_wheel_rev",
     "run_phase_error_wheel_rev",
+    "run_left_distance_m",
+    "run_right_distance_m",
+    "run_phase_error_m",
+    "raw_imu_status",
+    "raw_gyro_x_count",
+    "raw_gyro_y_count",
+    "raw_gyro_z_count",
+    "raw_temperature_cC",
     "mode",
     "emergency",
     "command_valid",
@@ -78,6 +88,39 @@ CSV_FIELDS = (
     "heading_error_deg",
     "heading_correction_milli_ref",
     "heading_correction_ref",
+    "sync_active",
+    "sync_phase_error_mdeg",
+    "sync_phase_error_deg",
+    "sync_correction_milli_ref",
+    "sync_correction_ref",
+    "drive_status",
+    "left_current",
+    "right_current",
+    "left_integral_output",
+    "right_integral_output",
+    "left_temperature_C",
+    "right_temperature_C",
+    "left_feedback_online",
+    "right_feedback_online",
+    "left_feedback_age_ms",
+    "right_feedback_age_ms",
+    "left_feedback_count",
+    "right_feedback_count",
+    "can_tx_success_count",
+    "can_tx_failure_count",
+    "can_last_tx_failure_age_ms",
+    "can_state",
+    "can_hal_error_code",
+    "can_protocol_last_error_code",
+    "can_bus_off",
+    "can_error_passive",
+    "can_tx_fifo_free_level",
+    "rfid_status",
+    "rfid_protocol_status",
+    "rfid_tag_type",
+    "rfid_sak",
+    "rfid_number",
+    "rfid_uid_hex",
     "raw_frame",
 )
 
@@ -236,9 +279,8 @@ class StraightLineTestApp:
         self.route_phase_start_s: float | None = None
         self.route_after_id: str | None = None
         self.route_vx_mps = 0.0
-        self.route_turn_rate_radps = 0.0
-        self.turn_start_yaw_deg: float | None = None
-        self.turn_target_delta_deg = 0.0
+        self.profile_stage_index = -1
+        self.profile_start_s: float | None = None
 
         self.last_encoder_raw: tuple[int, int] | None = None
         self.left_unwrapped: int | None = None
@@ -247,6 +289,8 @@ class StraightLineTestApp:
         self.last_ctl: list[int] | None = None
         self.last_att: list[int] | None = None
         self.last_hld: list[int] | None = None
+        self.last_syn: list[int] | None = None
+        self.last_mtr: list[int] | None = None
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         log_dir = Path(__file__).resolve().parent / "straight_test_logs"
@@ -261,7 +305,9 @@ class StraightLineTestApp:
         self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=CSV_FIELDS)
         self.csv_writer.writeheader()
         self.csv_file.flush()
-        self.raw_file.write("# profile=vx 0.03/0.06/0.09 m/s, 10 s each, az 0\n")
+        self.raw_file.write(
+            "# profile=vx 0.03/0.06/0.09/0.12/0.15 m/s, 5 s each, az 0\n"
+        )
         self.raw_file.write("host_time\tdirection\tframe\n")
         self.raw_file.flush()
         self.text_file.write("host_time\trun_id\trun_active\tprofile_stage\tframe\n")
@@ -269,7 +315,7 @@ class StraightLineTestApp:
 
         self.port_var = tk.StringVar()
         self.vx_var = tk.StringVar(value="0.10")
-        self.az_var = tk.StringVar(value=f"{DEFAULT_LEFT_TURN_RATE_RADPS:.2f}")
+        self.az_var = tk.StringVar(value="0.00")
         self.connection_var = tk.StringVar(value="Disconnected")
         self.command_var = tk.StringVar(value="Command: 0.000, 0.000")
         self.encoder_var = tk.StringVar(value="ENC: --")
@@ -277,6 +323,8 @@ class StraightLineTestApp:
         self.control_var = tk.StringVar(value="CTL: --")
         self.imu_var = tk.StringVar(value="ATT: --")
         self.hold_var = tk.StringVar(value="HLD: --")
+        self.sync_var = tk.StringVar(value="SYN: --")
+        self.motor_var = tk.StringVar(value="MTR: --")
         self.log_var = tk.StringVar(
             value=f"Raw: {self.raw_path} | TXT: {self.text_path} | CSV: {self.csv_path}"
         )
@@ -351,6 +399,12 @@ class StraightLineTestApp:
         )
         ttk.Label(telemetry, textvariable=self.hold_var, font=("Consolas", 10)).grid(
             row=4, column=0, sticky="w", pady=(4, 0)
+        )
+        ttk.Label(telemetry, textvariable=self.sync_var, font=("Consolas", 10)).grid(
+            row=5, column=0, sticky="w", pady=(4, 0)
+        )
+        ttk.Label(telemetry, textvariable=self.motor_var, font=("Consolas", 10)).grid(
+            row=6, column=0, sticky="w", pady=(4, 0)
         )
 
         ttk.Label(main, text="Log files").grid(row=4, column=0, sticky="w")
@@ -441,23 +495,7 @@ class StraightLineTestApp:
                 "Straight-line test", f"|vx| must not exceed {MAX_LINEAR_SPEED_MPS:.2f} m/s."
             )
             return None
-        if abs(az_radps) < 1e-6:
-            messagebox.showerror(
-                "Straight-turn-straight test", "Set a non-zero left turn az."
-            )
-            return None
-        if az_radps < 0.0:
-            messagebox.showerror(
-                "Straight-turn-straight test", "Use a positive az for the left turn."
-            )
-            return None
-        if abs(az_radps) > MAX_ANGULAR_SPEED_RADPS:
-            messagebox.showerror(
-                "Straight-turn-straight test",
-                f"|az| must not exceed {MAX_ANGULAR_SPEED_RADPS:.2f} rad/s.",
-            )
-            return None
-        return vx_mps, az_radps
+        return vx_mps, 0.0
 
     def set_route_phase(self, phase: str, vx_mps: float, az_radps: float) -> None:
         if self.worker is None:
@@ -482,7 +520,7 @@ class StraightLineTestApp:
                 self.root.after_cancel(self.route_after_id)
             except tk.TclError:
                 pass
-        self.route_after_id = self.root.after(delay_ms, self.route_step)
+        self.route_after_id = self.root.after(delay_ms, self.profile_step)
 
     def cancel_route_timer(self) -> None:
         if self.route_after_id is None:
@@ -493,68 +531,28 @@ class StraightLineTestApp:
             pass
         self.route_after_id = None
 
-    def route_step(self) -> None:
+    def profile_times(self, received_s: float) -> tuple[float, float]:
+        if self.profile_start_s is None:
+            return 0.0, 0.0
+        elapsed = max(0.0, received_s - self.profile_start_s)
+        stage = min(int(elapsed / STRAIGHT_STAGE_S), len(STRAIGHT_PROFILE_MPS) - 1)
+        return elapsed, elapsed - stage * STRAIGHT_STAGE_S
+
+    def profile_step(self) -> None:
         self.route_after_id = None
         if not self.run_active or self.stop_pending or self.worker is None:
             return
-
-        now_s = time.monotonic()
-        phase_elapsed_s = (
-            now_s - self.route_phase_start_s
-            if self.route_phase_start_s is not None
-            else 0.0
-        )
-
-        if self.route_phase == "straight_1":
-            self.turn_start_yaw_deg = None
-            self.turn_target_delta_deg = LEFT_TURN_ANGLE_DEG
-            self.set_route_phase("turn_left", 0.0, self.route_turn_rate_radps)
-            self.schedule_route_step(100)
+        next_stage = self.profile_stage_index + 1
+        if next_stage >= len(STRAIGHT_PROFILE_MPS):
+            self.stop_run("Profile complete")
             return
-
-        if self.route_phase == "turn_left":
-            yaw_valid = (
-                self.last_att is not None and (self.last_att[2] & IMU_YAW_VALID) != 0
-            )
-            if yaw_valid:
-                yaw_deg = self.last_att[3] / 1000.0
-                if self.turn_start_yaw_deg is None:
-                    self.turn_start_yaw_deg = yaw_deg
-                    self.write_raw(
-                        host_timestamp(),
-                        "EVENT",
-                        f"TURN_YAW_START,{self.run_id},{yaw_deg:.6f}",
-                    )
-                yaw_delta_deg = wrap_deg_delta(yaw_deg, self.turn_start_yaw_deg)
-                turn_done = (
-                    yaw_delta_deg >= self.turn_target_delta_deg
-                    if self.turn_target_delta_deg > 0.0
-                    else yaw_delta_deg <= self.turn_target_delta_deg
-                )
-                if turn_done:
-                    self.write_raw(
-                        host_timestamp(),
-                        "EVENT",
-                        f"TURN_YAW_DONE,{self.run_id},{yaw_deg:.6f},{yaw_delta_deg:.6f}",
-                    )
-                    self.set_route_phase("straight_2", self.route_vx_mps, 0.0)
-                    self.schedule_route_step(int(STRAIGHT_LEG_S * 1000.0))
-                    return
-
-            if phase_elapsed_s >= TURN_TIMEOUT_S:
-                self.write_raw(
-                    host_timestamp(),
-                    "EVENT",
-                    f"TURN_TIMEOUT,{self.run_id},{phase_elapsed_s:.3f}",
-                )
-                self.stop_run("Turn timeout")
-                return
-
-            self.schedule_route_step(100)
-            return
-
-        if self.route_phase == "straight_2":
-            self.stop_run("Route complete")
+        self.profile_stage_index = next_stage
+        vx_mps = STRAIGHT_PROFILE_MPS[next_stage]
+        self.set_route_phase(f"straight_{next_stage + 1}", vx_mps, 0.0)
+        if next_stage + 1 < len(STRAIGHT_PROFILE_MPS):
+            self.schedule_route_step(int(STRAIGHT_STAGE_S * 1000.0))
+        else:
+            self.schedule_route_step(int(STRAIGHT_STAGE_S * 1000.0))
 
     def start_run(self) -> None:
         if self.worker is None or not self.connected or self.run_active:
@@ -562,15 +560,14 @@ class StraightLineTestApp:
         command = self.validate_command()
         if command is None:
             return
-        vx_mps, az_radps = command
+        vx_mps, _ = command
         self.run_id += 1
         self.run_active = True
         self.stop_pending = False
         self.run_start_s = time.monotonic()
         self.route_vx_mps = vx_mps
-        self.route_turn_rate_radps = az_radps
-        self.turn_start_yaw_deg = None
-        self.turn_target_delta_deg = LEFT_TURN_ANGLE_DEG
+        self.profile_stage_index = -1
+        self.profile_start_s = time.monotonic()
         self.run_start_left = self.left_unwrapped
         self.run_start_right = self.right_unwrapped
         self.vx_entry.configure(state="disabled")
@@ -578,10 +575,9 @@ class StraightLineTestApp:
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.write_raw(
-            host_timestamp(), "EVENT", f"RUN_START,{self.run_id},{vx_mps:.6f},{az_radps:.6f},route"
+            host_timestamp(), "EVENT", f"RUN_START,{self.run_id},staircase"
         )
-        self.set_route_phase("straight_1", vx_mps, 0.0)
-        self.schedule_route_step(int(STRAIGHT_LEG_S * 1000.0))
+        self.profile_step()
 
     def stop_run(self, reason: str, settle: bool = True) -> None:
         self.cancel_route_timer()
@@ -638,7 +634,8 @@ class StraightLineTestApp:
         self.run_start_s = None
         self.route_phase = "idle"
         self.route_phase_start_s = None
-        self.turn_start_yaw_deg = None
+        self.profile_stage_index = -1
+        self.profile_start_s = None
         self.vx_entry.configure(state="normal")
         self.az_entry.configure(state="normal")
         self.start_button.configure(state="normal" if self.connected else "disabled")
@@ -783,11 +780,27 @@ class StraightLineTestApp:
             "right_integral_output": values[6],
             "left_temperature_C": values[7],
             "right_temperature_C": values[8],
+            "left_feedback_online": values[9],
+            "right_feedback_online": values[10],
+            "left_feedback_age_ms": values[11],
+            "right_feedback_age_ms": values[12],
+            "left_feedback_count": values[13],
+            "right_feedback_count": values[14],
+            "can_tx_success_count": values[15],
+            "can_tx_failure_count": values[16],
+            "can_last_tx_failure_age_ms": values[17],
+            "can_state": values[18],
+            "can_hal_error_code": values[19],
+            "can_protocol_last_error_code": values[20],
+            "can_bus_off": values[21],
+            "can_error_passive": values[22],
+            "can_tx_fifo_free_level": values[23],
         }
         self.motor_var.set(
             "MTR: "
-            f"status=0x{values[2]:02X} current={values[3]}/{values[4]}  "
-            f"integral={values[5]}/{values[6]}  temp={values[7]}/{values[8]} C"
+            f"status=0x{values[2]:02X} online={values[9]}/{values[10]}  "
+            f"current={values[3]}/{values[4]} integral={values[5]}/{values[6]}  "
+            f"CAN={values[18]} txerr={values[16]}"
         )
         if self.run_active and not self.stop_pending and (values[2] & 0x0A):
             reason = (
@@ -917,7 +930,7 @@ class StraightLineTestApp:
                 "ATT": 8,
                 "HLD": 7,
                 "SYN": 6,
-                "MTR": 10,
+                "MTR": 25,
                 "RFID": 9,
             }
             expected_fields = expected_fields_by_type[frame_type]
