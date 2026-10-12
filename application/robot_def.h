@@ -26,7 +26,7 @@
 #define CHASSIS_SPEED_LOOP_TUNING_MODE 0 // 0=启用增量式BMI088航向环
 #define CHASSIS_JLINK_TUNING_MODE 0    // 架空J-Link电机标定入口，地面测试必须为0
 #define CHASSIS_USE_INS 0             // 旧INS任务不参与本车导航控制
-#define CHASSIS_USE_BMI088_YAW_HOLD 1 // 轻量BMI088 yaw估计参与直行航向辅助
+#define CHASSIS_USE_BMI088_YAW_HOLD 1 // 直行测试启用BMI088航向角环
 
 /* 机器人重要参数定义,注意根据不同机器人进行修改,浮点数需要以.0或f结尾,无符号以u结尾 */
 // 云台参数
@@ -40,35 +40,57 @@
 #define REDUCTION_RATIO_LOADER 49.0f // 拨盘电机的减速比,英雄需要修改为3508的19.0f
 #define NUM_PER_CIRCLE 10            // 拨盘一圈的装载量
 // 两轮差速底盘实测参数,单位为mm(毫米)
-#define CHASSIS_LENGTH 148.5f       // 整车外廓长度
-#define CHASSIS_WIDTH 153.5f        // 整车外廓宽度
-#define TRACK_WIDTH 146.6f          // 左右轮中心距
+#define CHASSIS_LENGTH 133.0f       // 整车外廓长度，当前记录值
+#define CHASSIS_WIDTH 142.0f        // 轮外距/整车外廓宽度
+#define WHEEL_WIDTH 23.0f           // 单侧轮宽
+#define TRACK_WIDTH (CHASSIS_WIDTH - WHEEL_WIDTH) // 左右轮中心距=119 mm
+/* Empirical host angular-command calibration from the 2026-10-12 19:21
+ * sweep: wheel travel followed its target, but gyro yaw rate was ~1.13x.
+ * Keep physical geometry separate; verify absolute angle on the next run. */
+#define CHASSIS_TURN_RATE_SCALE 0.885f
+/* Normal zero commands retain velocity control while braking, then disable
+ * after both wheels stay still. Invalid input/stale feedback bypass braking. */
+#define CHASSIS_STOP_SETTLE_MS 200U
+#define CHASSIS_STOP_BRAKE_TIMEOUT_MS 1500U
 #define CENTER_GIMBAL_OFFSET_X 0    // 云台旋转中心距底盘几何中心的距离,前后方向,云台位于正中心时默认设为0
 #define CENTER_GIMBAL_OFFSET_Y 0    // 云台旋转中心距底盘几何中心的距离,左右方向,云台位于正中心时默认设为0
 #define RADIUS_WHEEL 30.2f // 轮胎外径保持实测前的60.4 mm
-/* 2026-10-06 实测：每个样本均为轮子转10圈的编码器增量。
- * 左轮5次均值 3688672.2 / 10，右轮6次均值 3688837.6667 / 10。
- */
+/* 2026-10-11 最新标定：左右轮各做 3 次、每次转 10 圈。 */
 #define MOTOR_ENCODER_COUNTS_PER_REV 8192.0f
-#define LEFT_ENCODER_COUNTS_PER_WHEEL_REV 368867.22f
-#define RIGHT_ENCODER_COUNTS_PER_WHEEL_REV 368883.7667f
+#define LEFT_ENCODER_COUNTS_PER_WHEEL_REV 10232.7667f
+#define RIGHT_ENCODER_COUNTS_PER_WHEEL_REV 10235.2333f
 #define LEFT_REDUCTION_RATIO_WHEEL \
     (LEFT_ENCODER_COUNTS_PER_WHEEL_REV / MOTOR_ENCODER_COUNTS_PER_REV)
 #define RIGHT_REDUCTION_RATIO_WHEEL \
     (RIGHT_ENCODER_COUNTS_PER_WHEEL_REV / MOTOR_ENCODER_COUNTS_PER_REV)
+/* Rebase the old degree/s tuning to the measured DM wheel reference scale. */
+#define CHASSIS_REFERENCE_SCALE \
+    (3.14159265359f / (180.0f * \
+     ((LEFT_REDUCTION_RATIO_WHEEL + RIGHT_REDUCTION_RATIO_WHEEL) * 0.5f)))
 #define REAL_WZ_RAT   1000
-#define CHASSIS_YAW_HOLD_DIR -1.0f      // BMI088改为ROS符号后保持原实车纠偏方向
-#define CHASSIS_YAW_HOLD_KP 20.0f       // 提高航向瞬态纠偏速度
-#define CHASSIS_YAW_HOLD_KI 0.15f       // 航向积分，消除长时间慢漂
-#define CHASSIS_YAW_HOLD_KD 4.0f        // bias后角速度阻尼
+#define CHASSIS_YAW_HOLD_DIR (-1.0f)    // 当前左正/右负安装方向下，负航向误差需给正w纠偏
+#define CHASSIS_YAW_HOLD_KP (2.00f * CHASSIS_REFERENCE_SCALE)
+#define CHASSIS_YAW_HOLD_KI (0.003f * CHASSIS_REFERENCE_SCALE)
+#define CHASSIS_YAW_HOLD_KD (0.05f * CHASSIS_REFERENCE_SCALE)
 #define CHASSIS_YAW_HOLD_DEADBAND 0.15f // 小角度死区，减少测速抖动
-#define CHASSIS_YAW_HOLD_ENCODER_ASSIST_GAIN 1.0f
+#define CHASSIS_YAW_HOLD_ENCODER_ASSIST_GAIN 0.0f  // 编码器相位只记录，不抵消BMI088航向误差
 #define CHASSIS_YAW_HOLD_ENCODER_ASSIST_MAX_DEG 12.0f
 #define CHASSIS_YAW_HOLD_FUSED_ERROR_MAX_DEG 12.0f
-#define CHASSIS_YAW_HOLD_MAX_RATIO 0.02f
-#define CHASSIS_YAW_HOLD_MAX_REF 250.0f
-#define CHASSIS_YAW_HOLD_I_MAX_RATIO 0.01f
-#define CHASSIS_YAW_HOLD_I_MAX_REF 100.0f
+#define CHASSIS_YAW_HOLD_MAX_RATIO 0.05f
+#define CHASSIS_YAW_HOLD_MAX_REF (250.0f * CHASSIS_REFERENCE_SCALE)
+#define CHASSIS_YAW_HOLD_I_MAX_RATIO 0.003f
+#define CHASSIS_YAW_HOLD_I_MAX_REF (100.0f * CHASSIS_REFERENCE_SCALE)
+/* Wheel phase sync is a secondary correction.  Limit how much it can
+ * oppose an active BMI088 heading correction. */
+#define CHASSIS_YAW_HOLD_OPPOSING_SYNC_RATIO 0.25f
+#define CHASSIS_WHEEL_SYNC_KP 0.45f
+#define CHASSIS_WHEEL_SYNC_KI 0.10f
+#define CHASSIS_WHEEL_SYNC_MAX_RATIO 0.08f
+/* The DM2325 velocity field and its unwrapped position field did not agree
+ * in the latest straight test.  Use the encoder phase rate for the sync
+ * loop, with a small position term to pull a slowly accumulated phase error
+ * back toward zero. */
+#define CHASSIS_WHEEL_SYNC_PHASE_POSITION_KP 0.12f
 #define GYRO2GIMBAL_DIR_YAW 1   // 陀螺仪数据相较于云台的yaw的方向,1为相同,-1为相反
 #define GYRO2GIMBAL_DIR_PITCH -1 // 陀螺仪数据相较于云台的pitch的方向,1为相同,-1为相反
 #define GYRO2GIMBAL_DIR_ROLL -1  // 陀螺仪数据相较于云台的roll的方向,1为相同,-1为相反
@@ -171,8 +193,8 @@ typedef struct
 typedef struct
 {
     // 控制部分
-    float v;           // 前进方向速度 Vx
-    float w;           // 横移方向速度 Vy
+    float v;           // Average output-shaft speed, rad/s.
+    float w;           // Half right-minus-left speed, rad/s (differential turn).
 } Chassis_Ctrl_Cmd_s;
 
 // cmd发布的云台控制数据,由gimbal订阅

@@ -1,7 +1,6 @@
 #include "bmi088_diag.h"
 
 #include "BMI088reg.h"
-#include "bsp_dwt.h"
 #include "main.h"
 #include "spi.h"
 #include <math.h>
@@ -43,7 +42,8 @@ static float still_sum;
 static float still_sum_sq;
 static uint16_t still_count;
 static uint8_t gyro_lpf_initialized;
-static uint64_t last_update_us;
+static uint32_t last_update_ms;
+static uint8_t update_time_initialized;
 static float last_corrected_gyro_z_dps;
 static uint8_t corrected_gyro_initialized;
 
@@ -173,7 +173,9 @@ static uint8_t BMI088DiagInit(void)
 
     initialized_ms = HAL_GetTick();
     gyro_lpf_initialized = 0U;
-    last_update_us = 0ULL;
+    last_update_ms = 0U;
+    update_time_initialized = 0U;
+    diag_state.status &= (uint8_t)~BMI088_DIAG_YAW_VALID;
     corrected_gyro_initialized = 0U;
     return 1U;
 }
@@ -316,7 +318,7 @@ static void BMI088DiagUpdateOnlineBias(float gyro_z_dps)
 void BMI088DiagUpdate(uint8_t stationary)
 {
     BMI088DiagSample sample;
-    uint64_t now_us;
+    uint32_t elapsed_ms;
     float gyro_z_dps;
     float gyro_z_est_dps;
     float corrected_gyro_z_dps;
@@ -352,20 +354,24 @@ void BMI088DiagUpdate(uint8_t stationary)
         sample.gz < -BMI088_GYRO_SATURATION_COUNT)
         diag_state.status |= BMI088_DIAG_SATURATED;
 
-    now_us = DWT_GetTimeline_us();
-    if (last_update_us == 0ULL)
+    /* Use the sensor sample's HAL timestamp, also sent in ATT.  A stopped
+     * DWT timeline must not silently leave yaw frozen while marking it valid. */
+    if (!update_time_initialized)
     {
-        last_update_us = now_us;
+        last_update_ms = sample.sample_time_ms;
+        update_time_initialized = 1U;
+        diag_state.status &= (uint8_t)~BMI088_DIAG_YAW_VALID;
         BMI088DiagUpdateStartupBias(gyro_z_est_dps, stationary);
         return;
     }
 
-    dt = (float)(now_us - last_update_us) * 0.000001f;
-    last_update_us = now_us;
-    if (dt > BMI088_SAMPLE_TIMEOUT_S)
-        diag_state.status |= BMI088_DIAG_SAMPLE_TIMEOUT;
-    if (dt <= 0.0f || dt > 0.2f || !isfinite(dt))
+    elapsed_ms = sample.sample_time_ms - last_update_ms;
+    last_update_ms = sample.sample_time_ms;
+    dt = (float)elapsed_ms * 0.001f;
+    if (elapsed_ms == 0U || dt > BMI088_SAMPLE_TIMEOUT_S)
     {
+        diag_state.status |= BMI088_DIAG_SAMPLE_TIMEOUT;
+        diag_state.status &= (uint8_t)~BMI088_DIAG_YAW_VALID;
         dt = 0.0f;
         corrected_gyro_initialized = 0U;
     }
@@ -388,9 +394,19 @@ void BMI088DiagUpdate(uint8_t stationary)
 
     if (yaw_initialized && dt > 0.0f)
     {
-        diag_state.yaw_deg +=
+        float next_yaw = diag_state.yaw_deg +
             0.5f * (last_corrected_gyro_z_dps + corrected_gyro_z_dps) * dt;
-        diag_state.status |= BMI088_DIAG_YAW_VALID;
+        if (isfinite(next_yaw))
+        {
+            diag_state.yaw_deg = next_yaw;
+            diag_state.status |= BMI088_DIAG_YAW_VALID;
+        }
+        else
+        {
+            diag_state.yaw_deg = 0.0f;
+            diag_state.status &= (uint8_t)~BMI088_DIAG_YAW_VALID;
+            corrected_gyro_initialized = 0U;
+        }
     }
     last_corrected_gyro_z_dps = corrected_gyro_z_dps;
 }

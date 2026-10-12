@@ -86,6 +86,12 @@ typedef struct
     uint8_t tx_fifo_free_level;
 } CAN_Diagnostic_s;
 
+/* Raw FDCAN receive diagnostics for bring-up, readable through J-Link. */
+extern volatile uint32_t can_rx_raw_count;
+extern volatile uint32_t can_rx_last_id;
+extern volatile uint32_t can_rx_last_length;
+extern volatile uint32_t can_rx_last_fifo;
+
 /**
  * @brief Register a module to CAN service,remember to call this before using a CAN device
  *        注册(初始化)一个can实例,需要传入初始化配置的指针.

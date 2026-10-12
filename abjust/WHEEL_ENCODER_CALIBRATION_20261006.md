@@ -1,63 +1,45 @@
-# Wheel encoder calibration - 2026-10-06
+# Wheel encoder calibration - latest 2026-10-11
 
 ## Conditions
 
-- Every raw value below is the encoder increment for exactly 10 wheel revolutions.
+- Each sample is the encoder increment for exactly 10 wheel revolutions.
+- Three samples were taken for each wheel.
 - Wheel diameter remains 60.4 mm (radius 30.2 mm).
 - Motor encoder resolution is 8192 count per motor revolution.
+- Wheel outer distance is 142 mm and wheel width is 23 mm, so wheel-center
+  track width is 119 mm.
 
 ## Raw measurements
 
-Left wheel, five 10-revolution increments:
+Right wheel, three 10-revolution increments:
 
 ```text
-3696635
-3691354
-3683265
-3696397
-3675710
+102578
+101736
+102743
 ```
 
-Right wheel, six 10-revolution increments:
+Left wheel, three 10-revolution increments:
 
 ```text
-3703248
-3685361
-3693220
-3675951
-3692265
-3682981
+101387
+103127
+102469
 ```
 
 ## Derived constants
 
 ```text
-left sum                 = 18443361 count
-left count/wheel-rev     = 18443361 / (5 * 10)
-                         = 368867.22
+left sum                  = 306983 count
+left mean per 10 rev      = 306983 / 3 = 102327.6667 count
+left count/wheel-rev      = 10232.7667 count
+left effective reduction  = 10232.7667 / 8192 = 1.2491170
 
-right sum                = 22133026 count
-right count/wheel-rev    = 22133026 / (6 * 10)
-                         = 368883.76666666666
-
-left effective reduction = 368867.22 / 8192
-                         = 45.02773681640625
-right effective reduction= 368883.76666666666 / 8192
-                         = 45.02975667317708
+right sum                 = 307057 count
+right mean per 10 rev     = 307057 / 3 = 102352.3333 count
+right count/wheel-rev     = 10235.2333 count
+right effective reduction = 10235.2333 / 8192 = 1.2494181
 ```
 
-The population standard deviations of the 10-revolution measurements are
-8093.54 count (0.2194%) on the left and 8670.48 count (0.2350%) on the right.
-The mean right/left CPR difference is only 0.00449%, but independent values are
-kept so odometry does not turn this small scale difference into yaw drift.
-
-With the unchanged 60.4 mm wheel diameter:
-
-```text
-left count/m  = 1943941.768462438
-right count/m = 1944028.969912494
-```
-
-These per-wheel CPR values are authoritative for the STM32 conversion and the
-ROS wheel-odometry configuration until a newer complete calibration supersedes
-this record.
+The left/right CPR difference is about 0.0241%, so the separate values are kept
+in the firmware and test GUI for straight-line synchronization.

@@ -17,6 +17,10 @@ typedef struct
     volatile uint32_t last_tx_failure_ms;
 } CAN_Transmit_Statistic_s;
 static CAN_Transmit_Statistic_s can_tx_statistics[DEVICE_CAN_CNT];
+volatile uint32_t can_rx_raw_count;
+volatile uint32_t can_rx_last_id;
+volatile uint32_t can_rx_last_length;
+volatile uint32_t can_rx_last_fifo;
 
 #ifdef FDCAN
 static int8_t CANPeripheralIndex(FDCAN_HandleTypeDef *can_handle)
@@ -76,6 +80,15 @@ static void CANRecordTransmitResult(CANInstance *instance, uint8_t success)
  */
 static void CANAddFilter(CANInstance *_instance)
 {
+	/* Multiple DM motors may share one feedback CAN ID and demultiplex the
+	 * motor ID in the payload.  Install one hardware filter for that ID;
+	 * CANFIFOxCallback() fans the frame out to every matching decoder. */
+	for (size_t i = 0; i < idx; ++i)
+	{
+		if (can_instance[i]->can_handle == _instance->can_handle &&
+			can_instance[i]->rx_id == _instance->rx_id)
+			return;
+	}
 
 #ifdef FDCAN
 	static uint8_t can1_filter_idx = 0, can2_filter_idx = 0 , can3_filter_idx = 0;
@@ -208,7 +221,10 @@ CANInstance *CANRegister(CAN_Init_Config_s *config)
     }
     for (size_t i = 0; i < idx; i++)
     { // 重复注册 | id重复
-        if (can_instance[i]->rx_id == config->rx_id && can_instance[i]->can_handle == config->can_handle)
+        /* A shared decoder can demultiplex motors with the same feedback ID. */
+        if (can_instance[i]->rx_id == config->rx_id &&
+            can_instance[i]->can_handle == config->can_handle &&
+            can_instance[i]->can_module_callback != config->can_module_callback)
         {
             while (1)
             {
@@ -383,6 +399,11 @@ static void FDCANFIFOxCallback(FDCAN_HandleTypeDef *_hfdcan, uint32_t fifox)
 		}
         if(rxconf.RxFrameType==FDCAN_DATA_FRAME && rxconf.IdType==FDCAN_STANDARD_ID)
         {
+            can_rx_raw_count++;
+            can_rx_last_id = rxconf.Identifier;
+            can_rx_last_length = DataLength;
+            can_rx_last_fifo = fifox;
+            /* Deliver shared feedback IDs to every registered decoder instance. */
         	for (size_t i = 0; i < idx; ++i)
 			{
         		// 两者相等说明这是要找的实例
@@ -394,7 +415,6 @@ static void FDCANFIFOxCallback(FDCAN_HandleTypeDef *_hfdcan, uint32_t fifox)
 						memcpy(can_instance[i]->rx_buff, fdcan_rx_buff, can_instance[i]->rx_len); // 消息拷贝到对应实例
 						can_instance[i]->can_module_callback(can_instance[i]);     // 触发回调进行数据解析和处理
 					}
-					break;
 				}
 			}
         }
@@ -457,7 +477,6 @@ static void CANFIFOxCallback(CAN_HandleTypeDef *_hcan, uint32_t fifox)
                    memcpy(can_instance[i]->rx_buff, can_rx_buff, rxconf.DLC); // 消息拷贝到对应实例
                    can_instance[i]->can_module_callback(can_instance[i]);     // 触发回调进行数据解析和处理
                }
-               break;
            }
        }
    }

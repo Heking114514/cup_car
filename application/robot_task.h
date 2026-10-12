@@ -10,6 +10,7 @@
 #include "robot_def.h"
 #include "ins_task.h"
 #include "motor_task.h"
+#include "dmmotor.h"
 #include "referee_task.h"
 #include "master_process.h"
 #include "daemon.h"
@@ -51,6 +52,7 @@ void OSTaskInit()
     osThreadDef(robottask, StartROBOTTASK, osPriorityNormal, 0, 1536);
     robotTaskHandle = osThreadCreate(osThread(robottask), NULL);
     
+    DMMotorControlInit();
     //HTMotorControlInit(); // 没有注册HT电机则不会执行
 }
 

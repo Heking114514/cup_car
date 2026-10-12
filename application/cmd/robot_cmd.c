@@ -24,18 +24,18 @@
 #define YAW_ALIGN_ANGLE (YAW_CHASSIS_ALIGN_ECD * ECD_ANGLE_COEF_DJI) // 对齐时的角度,0-360
 #define PTICH_HORIZON_ANGLE (PITCH_HORIZON_ECD * ECD_ANGLE_COEF_DJI) // pitch水平时电机的角度,0-360
 #define NAV_LEFT_REF_PER_MPS \
-    (360.0f * LEFT_REDUCTION_RATIO_WHEEL * 1000.0f / (2.0f * PI * RADIUS_WHEEL))
+    (LEFT_REDUCTION_RATIO_WHEEL * 1000.0f / RADIUS_WHEEL)
 #define NAV_RIGHT_REF_PER_MPS \
-    (360.0f * RIGHT_REDUCTION_RATIO_WHEEL * 1000.0f / (2.0f * PI * RADIUS_WHEEL))
+    (RIGHT_REDUCTION_RATIO_WHEEL * 1000.0f / RADIUS_WHEEL)
 #define REMOTE_TEST_ROCKER_MAX 500.0f
 #define REMOTE_TEST_ROCKER_DEADBAND 90.0f
-#define REMOTE_TEST_LINEAR_MIN_REF 3300.0f
-#define REMOTE_TEST_LINEAR_MAX_REF 6800.0f
-#define REMOTE_TEST_ANGULAR_MIN_REF 2400.0f
-#define REMOTE_TEST_ANGULAR_MAX_REF 3800.0f
+#define REMOTE_TEST_LINEAR_MIN_REF (3300.0f * CHASSIS_REFERENCE_SCALE)
+#define REMOTE_TEST_LINEAR_MAX_REF (6800.0f * CHASSIS_REFERENCE_SCALE)
+#define REMOTE_TEST_ANGULAR_MIN_REF (2400.0f * CHASSIS_REFERENCE_SCALE)
+#define REMOTE_TEST_ANGULAR_MAX_REF (3800.0f * CHASSIS_REFERENCE_SCALE)
 #define REMOTE_TEST_MOVING_TURN_RATIO 0.75f
-#define REMOTE_TEST_LINEAR_SLEW_REF_PER_S 5500.0f
-#define REMOTE_TEST_ANGULAR_SLEW_REF_PER_S 4200.0f
+#define REMOTE_TEST_LINEAR_SLEW_REF_PER_S (5500.0f * CHASSIS_REFERENCE_SCALE)
+#define REMOTE_TEST_ANGULAR_SLEW_REF_PER_S (4200.0f * CHASSIS_REFERENCE_SCALE)
 #define REMOTE_TEST_CMD_PERIOD_S 0.01f
 
 
@@ -214,14 +214,6 @@ static void NavigationControlSet()
                                       REMOTE_TEST_LINEAR_SLEW_REF_PER_S);
             remote_w_ref = RemoteSlew(remote_w_ref, target_w,
                                       REMOTE_TEST_ANGULAR_SLEW_REF_PER_S);
-
-            /* Apply the turn ratio to the slewed command as well.  Limiting
-             * only target_w lets the independent ramps temporarily make the
-             * inside wheel reference collapse toward zero. */
-            if (fabsf(remote_v_ref) > 0.0f)
-                remote_w_ref = RemoteClamp(
-                    remote_w_ref,
-                    fabsf(remote_v_ref) * REMOTE_TEST_MOVING_TURN_RATIO);
         }
     }
     else
@@ -238,11 +230,16 @@ static void NavigationControlSet()
 #else
     {
         float half_track_m = TRACK_WIDTH / 2000.0f;
-        float left_ref = (-vision_recv_data->v +
-                          vision_recv_data->w * half_track_m) *
+        float turn_mps = vision_recv_data->w * half_track_m *
+                         CHASSIS_TURN_RATE_SCALE;
+        /* Keep the host/vision convention: positive vx is vehicle-forward
+         * and positive w is counterclockwise.  ChassisTask applies the
+         * per-motor installation signs after this normalized wheel mapping. */
+        float left_ref = (vision_recv_data->v -
+                          turn_mps) *
                          NAV_LEFT_REF_PER_MPS;
-        float right_ref = (-vision_recv_data->v -
-                           vision_recv_data->w * half_track_m) *
+        float right_ref = (vision_recv_data->v +
+                           turn_mps) *
                           NAV_RIGHT_REF_PER_MPS;
 
         chassis_cmd_send.v = (left_ref + right_ref) * 0.5f;

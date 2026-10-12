@@ -129,7 +129,7 @@ typedef struct
     float target_right_mps;
     float measured_left_mps;
     float measured_right_mps;
-    int16_t left_output;
+    int16_t left_output;  // Zero in DM velocity mode (no external current command).
     int16_t right_output;
     int16_t left_current;
     int16_t right_current;
@@ -159,6 +159,8 @@ typedef struct
     float heading_ref_deg;
     float heading_error_deg;
     float heading_correction_ref;
+    float heading_i_term_ref;
+    float heading_fused_error_deg;
     uint8_t sync_active;
     float sync_phase_error_deg;
     float sync_correction_ref;

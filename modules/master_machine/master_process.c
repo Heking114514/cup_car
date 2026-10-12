@@ -492,13 +492,15 @@ static int HostAppendHeadingHold(char *buffer, size_t capacity, uint32_t now,
                                  const Chassis_Host_Feedback_s *chassis)
 {
     return snprintf(buffer, capacity,
-                    "HLD,%lu,%lu,%u,%ld,%ld,%ld\r\n",
+                    "HLD,%lu,%lu,%u,%ld,%ld,%ld,%ld,%ld\r\n",
                     (unsigned long)now,
                     (unsigned long)sequence,
                     (unsigned int)chassis->heading_active,
                     (long)HostToMilli(chassis->heading_ref_deg),
                     (long)HostToMilli(chassis->heading_error_deg),
-                    (long)HostToMilli(chassis->heading_correction_ref));
+                    (long)HostToMilli(chassis->heading_correction_ref),
+                    (long)HostToMilli(chassis->heading_i_term_ref),
+                    (long)HostToMilli(chassis->heading_fused_error_deg));
 }
 
 static int HostAppendStraightSync(char *buffer, size_t capacity, uint32_t now,

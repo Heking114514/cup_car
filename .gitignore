@@ -1,6 +1,9 @@
 /build
 /build_verify/
 /__pycache__/
+/tests/__pycache__/
 /encoder_calibration_logs/
 /straight_test_logs/
 /turn_rate_sweep_logs/
+/turn_response_logs/
+/abjust/logs/
