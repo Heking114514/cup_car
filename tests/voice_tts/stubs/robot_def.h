@@ -1,0 +1,6 @@
+#ifndef TEST_ROBOT_DEF_H
+#define TEST_ROBOT_DEF_H
+#ifndef ROBOT_HOST_ONLY_SPEECH
+#define ROBOT_HOST_ONLY_SPEECH 1
+#endif
+#endif

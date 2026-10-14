@@ -18,6 +18,25 @@ typedef struct
     uint8_t status;
 } VoiceTTS_State_s;
 
+#define VOICE_TTS_HOST_MAX_BYTES 128U
+
+typedef enum {
+    VOICE_HOST_NONE = 0, VOICE_HOST_QUEUED, VOICE_HOST_PLAYING,
+    VOICE_HOST_ESTIMATED_DONE, VOICE_HOST_ERROR, VOICE_HOST_BUSY,
+    VOICE_HOST_INVALID
+} VoiceTTS_HostStatus_e;
+
+typedef struct {
+    uint32_t id;
+    uint32_t rejected_id;
+    VoiceTTS_HostStatus_e status;
+    VoiceTTS_HostStatus_e rejected_status;
+} VoiceTTS_HostState_s;
+
+void VoiceTTSGetHostState(VoiceTTS_HostState_s *state);
+const char *VoiceTTSHostStatusName(VoiceTTS_HostStatus_e status);
+uint8_t VoiceTTSParseHostLine(const uint8_t *line, uint16_t len);
+uint8_t VoiceTTSQueueHostRequest(uint32_t id, const uint8_t *data, uint16_t len);
 void VoiceTTSInit(UART_HandleTypeDef *uart_handle);
 void VoiceTTSTask(void);
 uint8_t VoiceTTSSpeakGBK(const uint8_t *data, uint16_t len);

@@ -110,9 +110,9 @@ void VisionSetNavigationMode(uint8_t enabled)
 #include <stdio.h>
 #include <stdlib.h>
 
-#define HOST_COMMAND_LINE_MAX        96U
+#define HOST_COMMAND_LINE_MAX       192U
 #define HOST_RX_BUFFER_SIZE         256U
-#define HOST_TX_BUFFER_SIZE        1024U
+#define HOST_TX_BUFFER_SIZE        1280U
 #define HOST_COMMAND_TIMEOUT_MS     500U
 #define HOST_ENCODER_REPORT_MS       20U
 #define HOST_CONTROL_REPORT_MS      100U
@@ -218,15 +218,8 @@ static void HostParseVelocity(void)
 #if ROBOT_ENABLE_HOST_TTS_COMMAND
 static uint8_t HostParseTTS(void)
 {
-    const char prefix[] = "TTS,";
-    uint16_t prefix_len = (uint16_t)(sizeof(prefix) - 1U);
-
-    if (host_command_length <= prefix_len ||
-        memcmp(host_command_line, prefix, prefix_len) != 0)
-        return 0U;
-
-    return VoiceTTSQueueHostGBK((const uint8_t *)&host_command_line[prefix_len],
-                                (uint16_t)(host_command_length - prefix_len));
+    return VoiceTTSParseHostLine((const uint8_t *)host_command_line,
+                                 host_command_length);
 }
 #endif
 
@@ -356,14 +349,12 @@ void VisionProcess(void)
         {
             if (host_command_length > 0U)
             {
+                if (host_command_line[host_command_length - 1U] == '\r')
+                    host_command_length--;
                 host_command_line[host_command_length] = '\0';
                 HostParseCommand();
             }
             host_command_length = 0U;
-        }
-        else if (byte == '\r')
-        {
-            continue;
         }
         else if (host_command_length < HOST_COMMAND_LINE_MAX - 1U)
         {
@@ -644,6 +635,27 @@ void VisionSend(void)
             return;
         length += appended;
     }
+
+#if ROBOT_ENABLE_HOST_TTS_COMMAND
+    if (control_due) {
+        VoiceTTS_HostState_s tts;
+        VoiceTTSGetHostState(&tts);
+        if (tts.status != VOICE_HOST_NONE) {
+            appended = snprintf(send_buffer + length, sizeof(send_buffer) - (size_t)length,
+                                "TTS,%lu,%s\r\n", (unsigned long)tts.id,
+                                VoiceTTSHostStatusName(tts.status));
+            if (appended <= 0 || appended >= (int)(sizeof(send_buffer) - (size_t)length)) return;
+            length += appended;
+        }
+        if (tts.rejected_status != VOICE_HOST_NONE) {
+            appended = snprintf(send_buffer + length, sizeof(send_buffer) - (size_t)length,
+                                "TTS,%lu,%s\r\n", (unsigned long)tts.rejected_id,
+                                VoiceTTSHostStatusName(tts.rejected_status));
+            if (appended <= 0 || appended >= (int)(sizeof(send_buffer) - (size_t)length)) return;
+            length += appended;
+        }
+    }
+#endif
 
     if (USBTransmit((const uint8_t *)send_buffer, (uint16_t)length) == USBD_OK)
     {
