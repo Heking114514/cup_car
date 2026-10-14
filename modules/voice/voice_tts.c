@@ -29,6 +29,9 @@ static uint32_t voice_card_absent_since_ms;
 static uint8_t voice_card_absent_seen;
 static uint8_t voice_last_uid_size;
 static uint8_t voice_last_uid[RFID_UID_MAX_SIZE];
+static uint8_t voice_host_pending;
+static uint16_t voice_host_pending_len;
+static uint8_t voice_host_pending_data[VOICE_TTS_TX_BUFFER_SIZE];
 
 static const uint8_t voice_startup_text[] = {
     0xC4, 0xE3, 0xBA, 0xC3
@@ -164,11 +167,38 @@ void VoiceTTSInit(UART_HandleTypeDef *uart_handle)
     voice_card_absent_since_ms = 0U;
     voice_card_absent_seen = 0U;
     voice_last_uid_size = 0U;
+    voice_host_pending = 0U;
+    voice_host_pending_len = 0U;
 }
 
 uint8_t VoiceTTSSpeakGBK(const uint8_t *data, uint16_t len)
 {
     return VoiceTTSWrite(data, len);
+}
+
+uint8_t VoiceTTSIsHostReady(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    return (uint8_t)(voice_host_pending == 0U &&
+                     voice_startup_stage == VOICE_TTS_STAGE_READY &&
+                     now >= voice_next_tx_time_ms);
+}
+
+uint8_t VoiceTTSQueueHostGBK(const uint8_t *data, uint16_t len)
+{
+    if (data == NULL || len == 0U || len > VOICE_TTS_TX_BUFFER_SIZE ||
+        !VoiceTTSIsHostReady())
+    {
+        voice_state.status |= VOICE_TTS_STATUS_BUSY;
+        return 0U;
+    }
+
+    memcpy(voice_host_pending_data, data, len);
+    voice_host_pending_len = len;
+    voice_host_pending = 1U;
+    voice_state.status |= VOICE_TTS_STATUS_BUSY;
+    return 1U;
 }
 
 uint8_t VoiceTTSSpeakASCII(const char *text)
@@ -225,6 +255,18 @@ void VoiceTTSTask(void)
 
     if (voice_uart == NULL)
         return;
+
+    if (voice_host_pending && voice_startup_stage == VOICE_TTS_STAGE_READY &&
+        now >= voice_next_tx_time_ms)
+    {
+        if (VoiceTTSSpeakGBK(voice_host_pending_data, voice_host_pending_len))
+        {
+            voice_host_pending = 0U;
+            voice_host_pending_len = 0U;
+            voice_state.status &= (uint8_t)~VOICE_TTS_STATUS_BUSY;
+        }
+        return;
+    }
 
     if (voice_startup_stage == VOICE_TTS_STAGE_STARTUP_TEXT)
     {

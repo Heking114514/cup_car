@@ -8,6 +8,7 @@
 #define VOICE_TTS_STATUS_READY    0x01U
 #define VOICE_TTS_STATUS_TX_OK    0x02U
 #define VOICE_TTS_STATUS_TX_ERROR 0x04U
+#define VOICE_TTS_STATUS_BUSY     0x08U
 
 typedef struct
 {
@@ -20,6 +21,8 @@ typedef struct
 void VoiceTTSInit(UART_HandleTypeDef *uart_handle);
 void VoiceTTSTask(void);
 uint8_t VoiceTTSSpeakGBK(const uint8_t *data, uint16_t len);
+uint8_t VoiceTTSQueueHostGBK(const uint8_t *data, uint16_t len);
+uint8_t VoiceTTSIsHostReady(void);
 uint8_t VoiceTTSSpeakASCII(const char *text);
 uint8_t VoiceTTSSetVolume(uint8_t level);
 uint8_t VoiceTTSSetSpeed(uint8_t level);

@@ -57,7 +57,7 @@ void RobotTask()
 {
 #if defined(ONE_BOARD) || defined(GIMBAL_BOARD)
     RFIDTask();
-#if !ROBOT_HOST_ONLY_SPEECH
+#if !ROBOT_HOST_ONLY_SPEECH || ROBOT_ENABLE_HOST_TTS_COMMAND
     VoiceTTSTask();
 #endif
     RobotCMDTask();

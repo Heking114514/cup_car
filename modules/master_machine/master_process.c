@@ -225,9 +225,8 @@ static uint8_t HostParseTTS(void)
         memcmp(host_command_line, prefix, prefix_len) != 0)
         return 0U;
 
-    VoiceTTSSpeakGBK((const uint8_t *)&host_command_line[prefix_len],
-                     (uint16_t)(host_command_length - prefix_len));
-    return 1U;
+    return VoiceTTSQueueHostGBK((const uint8_t *)&host_command_line[prefix_len],
+                                (uint16_t)(host_command_length - prefix_len));
 }
 #endif
 
