@@ -45,7 +45,7 @@ static Gimbal_Upload_Data_s gimbal_fetch_data; // 从云台获取的反馈信息
 float v_debug=4000.0;
 
 #define CHASSIS_MOTOR_LEFT_ID 2u
-#define CHASSIS_MOTOR_RIGHT_ID 3u
+#define CHASSIS_MOTOR_RIGHT_ID 1u
 #define CHASSIS_STRAIGHT_W_EPSILON 5.0f
 #define CHASSIS_MOTION_REF_EPSILON 50.0f
 #define CHASSIS_HEADING_FUSION_TAU_S 1.5f
@@ -62,8 +62,8 @@ float v_debug=4000.0;
 #define CHASSIS_LEFT_SPEED_KI 0.12f
 #define CHASSIS_LEFT_SPEED_MAX_OUT 1700.0f
 #define CHASSIS_LEFT_SPEED_I_LIMIT 1200.0f
-#define CHASSIS_RIGHT_SPEED_KP 0.22f
-#define CHASSIS_RIGHT_SPEED_KI 0.06f
+#define CHASSIS_RIGHT_SPEED_KP 0.18f
+#define CHASSIS_RIGHT_SPEED_KI 0.08f
 #define CHASSIS_RIGHT_SPEED_MAX_OUT 1500.0f
 #define CHASSIS_RIGHT_SPEED_I_LIMIT 1000.0f
 #define CHASSIS_FRICTION_START_SPEED_DPS 350.0f
@@ -1093,7 +1093,7 @@ void ChassisInit()
         .motor_type = M2006
     };
     //  @todo: 当前还没有设置电机的正反转,仍然需要手动添加reference的正负号,需要电机module的支持,待修改.
-    // 按微信参考版映射：左轮 2，右轮 3。两台电机共用 0x200，分别使用第 2、3 个电流槽位。
+    // 左轮 ID 2，右轮 ID 1。两台电机共用 0x200，分别使用第 2、1 个电流槽位。
     chassis_motor_config.can_init_config.tx_id = CHASSIS_MOTOR_LEFT_ID;
     chassis_motor_config.controller_setting_init_config.motor_reverse_flag = MOTOR_DIRECTION_REVERSE;
     ChassisSetWheelSpeedPidConfig(&chassis_motor_config,
